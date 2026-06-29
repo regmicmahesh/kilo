@@ -56,7 +56,7 @@ int main(int argc, char **argv) {
     editorOpen(&E, argv[1]);
     enableRawMode(&E, STDIN_FILENO);
     editorSetStatusMessage(&E,
-        "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
+        "HELP: Ctrl-S save | Ctrl-Q quit | Ctrl-F find | Ctrl-Z undo | Ctrl-Y redo");
     while (1) {
         editorRefreshScreen(&E);
         editorProcessKeypress(&E, STDIN_FILENO);

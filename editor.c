@@ -13,6 +13,7 @@
 #include "syntax.h"
 #include "terminal.h"
 #include "output.h"
+#include "undo.h"
 
 /* Signal handlers have a fixed signature, so we keep one pointer solely
  * for SIGWINCH. It is set once from initEditor and never used as shared
@@ -50,6 +51,7 @@ void initEditor(struct editorConfig *E) {
     E->rawmode = 0;
     E->statusmsg[0] = '\0';
     E->statusmsg_time = 0;
+    undoInit(&E->undo);
     sigwinch_editor = E;
     updateWindowSize(E);
     signal(SIGWINCH, handleSigWinCh);
@@ -207,20 +209,47 @@ void editorInsertChar(struct editorConfig *E, int c) {
     int filerow = E->rowoff + E->cy;
     int filecol = E->coloff + E->cx;
     erow *row = (filerow >= E->numrows) ? NULL : &E->row[filerow];
+    int created_rows = 0;
+    char ch = (char)c;
+    int merged = 0;
 
     /* If the row where the cursor is currently located does not exist in our
      * logical representaion of the file, add enough empty rows as needed. */
     if (!row) {
-        while (E->numrows <= filerow)
+        while (E->numrows <= filerow) {
+            if (!E->undo.suspend) {
+                if (!created_rows) undoBeginGroup(E);
+                undoPushAtom(E, U_INSERT_ROW, E->numrows, 0, "", 0);
+            }
             editorInsertRow(E, E->numrows, "", 0);
+            created_rows++;
+        }
     }
     row = &E->row[filerow];
+
+    if (!E->undo.suspend) {
+        if (created_rows) {
+            undoPushAtom(E, U_INSERT_TEXT, filerow, filecol, &ch, 1);
+        } else {
+            /* Merge needs after-cursor updated after the edit; try merge on
+             * position only first by checking without relying on after. */
+            merged = undoTryMergeInsertChar(E, filerow, filecol, c);
+            if (!merged) {
+                undoBeginGroup(E);
+                undoPushAtom(E, U_INSERT_TEXT, filerow, filecol, &ch, 1);
+            }
+        }
+    }
+
     editorRowInsertChar(E, row, filecol, c);
     if (E->cx == E->screencols - 1)
         E->coloff++;
     else
         E->cx++;
     E->dirty++;
+
+    if (!E->undo.suspend && E->undo.undo_len > 0)
+        undoEndGroup(E);
 }
 
 /* Inserting a newline is slightly complex as we have to handle inserting a
@@ -232,6 +261,10 @@ void editorInsertNewline(struct editorConfig *E) {
 
     if (!row) {
         if (filerow == E->numrows) {
+            if (!E->undo.suspend) {
+                undoBeginGroup(E);
+                undoPushAtom(E, U_SPLIT_LINE, filerow, 0, NULL, 0);
+            }
             editorInsertRow(E, filerow, "", 0);
             goto fixcursor;
         }
@@ -240,6 +273,10 @@ void editorInsertNewline(struct editorConfig *E) {
     /* If the cursor is over the current line size, we want to conceptually
      * think it's just over the last character. */
     if (filecol >= row->size) filecol = row->size;
+    if (!E->undo.suspend) {
+        undoBeginGroup(E);
+        undoPushAtom(E, U_SPLIT_LINE, filerow, filecol, NULL, 0);
+    }
     if (filecol == 0) {
         editorInsertRow(E, filerow, "", 0);
     } else {
@@ -258,6 +295,8 @@ fixcursor:
     }
     E->cx = 0;
     E->coloff = 0;
+    if (!E->undo.suspend)
+        undoEndGroup(E);
 }
 
 /* Delete the char at the current prompt position. */
@@ -265,12 +304,18 @@ void editorDelChar(struct editorConfig *E) {
     int filerow = E->rowoff + E->cy;
     int filecol = E->coloff + E->cx;
     erow *row = (filerow >= E->numrows) ? NULL : &E->row[filerow];
+    int merged = 0;
 
     if (!row || (filecol == 0 && filerow == 0)) return;
     if (filecol == 0) {
         /* Handle the case of column 0, we need to move the current line
          * on the right of the previous one. */
-        filecol = E->row[filerow - 1].size;
+        int join_col = E->row[filerow - 1].size;
+        if (!E->undo.suspend) {
+            undoBeginGroup(E);
+            undoPushAtom(E, U_JOIN_LINES, filerow - 1, join_col, NULL, 0);
+        }
+        filecol = join_col;
         editorRowAppendString(E, &E->row[filerow - 1], row->chars, row->size);
         editorDelRow(E, filerow);
         row = NULL;
@@ -284,12 +329,26 @@ void editorDelChar(struct editorConfig *E) {
             E->cx -= shift;
             E->coloff += shift;
         }
+        if (!E->undo.suspend)
+            undoEndGroup(E);
     } else {
-        editorRowDelChar(E, row, filecol - 1);
+        char ch = row->chars[filecol - 1];
+        int del_col = filecol - 1;
+
+        if (!E->undo.suspend) {
+            merged = undoTryMergeDeleteChar(E, filerow, del_col, (unsigned char)ch);
+            if (!merged) {
+                undoBeginGroup(E);
+                undoPushAtom(E, U_DELETE_TEXT, filerow, del_col, &ch, 1);
+            }
+        }
+        editorRowDelChar(E, row, del_col);
         if (E->cx == 0 && E->coloff)
             E->coloff--;
         else
             E->cx--;
+        if (!E->undo.suspend)
+            undoEndGroup(E);
     }
     if (row) editorUpdateRow(E, row);
     E->dirty++;
@@ -371,4 +430,91 @@ void editorMoveCursor(struct editorConfig *E, int key) {
 
 int editorFileWasModified(struct editorConfig *E) {
     return E->dirty;
+}
+
+/* Insert a full row as one undo unit (e.g. paste line / indent helpers). */
+void editorUndoableInsertRow(struct editorConfig *E, int at, char *s, size_t len) {
+    if (!E->undo.suspend) {
+        undoBeginGroup(E);
+        undoPushAtom(E, U_INSERT_ROW, at, 0, s, len);
+    }
+    editorInsertRow(E, at, s, len);
+    if (!E->undo.suspend)
+        undoEndGroup(E);
+}
+
+/* Delete a full row as one undo unit. */
+void editorUndoableDeleteRow(struct editorConfig *E, int at) {
+    erow *row;
+    if (at < 0 || at >= E->numrows) return;
+    row = &E->row[at];
+    if (!E->undo.suspend) {
+        undoBeginGroup(E);
+        undoPushAtom(E, U_DELETE_ROW, at, 0, row->chars, row->size);
+    }
+    editorDelRow(E, at);
+    if (!E->undo.suspend)
+        undoEndGroup(E);
+}
+
+/* Insert a multi-character string at the cursor as one undo unit (paste).
+ * Newlines in the string split lines via U_SPLIT_LINE atoms in the same group. */
+void editorUndoableInsertText(struct editorConfig *E, const char *s, size_t len) {
+    size_t i;
+    int filerow, filecol;
+    size_t start;
+
+    if (!s || len == 0) return;
+
+    if (!E->undo.suspend)
+        undoBeginGroup(E);
+
+    i = 0;
+    while (i < len) {
+        filerow = E->rowoff + E->cy;
+        filecol = E->coloff + E->cx;
+
+        if (s[i] == '\n') {
+            if (!E->undo.suspend)
+                undoPushAtom(E, U_SPLIT_LINE, filerow, filecol, NULL, 0);
+            E->undo.suspend++;
+            editorInsertNewline(E);
+            E->undo.suspend--;
+            i++;
+            continue;
+        }
+
+        start = i;
+        while (i < len && s[i] != '\n') i++;
+        if (i > start) {
+            if (filerow >= E->numrows) {
+                while (E->numrows <= filerow) {
+                    if (!E->undo.suspend)
+                        undoPushAtom(E, U_INSERT_ROW, E->numrows, 0, "", 0);
+                    E->undo.suspend++;
+                    editorInsertRow(E, E->numrows, "", 0);
+                    E->undo.suspend--;
+                }
+            }
+            if (!E->undo.suspend)
+                undoPushAtom(E, U_INSERT_TEXT, filerow, filecol, s + start, i - start);
+            E->undo.suspend++;
+            undoApplyInsertText(E, filerow, filecol, s + start, i - start);
+            E->undo.suspend--;
+            /* Advance cursor past inserted text on the line. */
+            {
+                int n = (int)(i - start);
+                while (n--) {
+                    if (E->cx == E->screencols - 1)
+                        E->coloff++;
+                    else
+                        E->cx++;
+                }
+            }
+            E->dirty++;
+        }
+    }
+
+    if (!E->undo.suspend)
+        undoEndGroup(E);
 }

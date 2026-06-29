@@ -1,6 +1,6 @@
 CC ?= cc
 CFLAGS = -Wall -W -pedantic -std=c99
-SRCS = main.c editor.c terminal.c buffer.c input.c output.c search.c syntax.c fileio.c
+SRCS = main.c editor.c terminal.c buffer.c input.c output.c search.c syntax.c fileio.c undo.c
 OBJS = $(SRCS:.c=.o)
 TARGET = kilo
 

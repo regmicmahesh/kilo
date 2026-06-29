@@ -7,6 +7,7 @@
 
 #include "fileio.h"
 #include "output.h"
+#include "undo.h"
 
 /* Load the specified program in the editor memory and returns 0 on success
  * or 1 on error. */
@@ -28,6 +29,7 @@ int editorOpen(struct editorConfig *E, char *filename) {
         return 1;
     }
 
+    E->undo.suspend = 1;
     char *line = NULL;
     size_t linecap = 0;
     ssize_t linelen;
@@ -38,6 +40,7 @@ int editorOpen(struct editorConfig *E, char *filename) {
     }
     free(line);
     fclose(fp);
+    E->undo.suspend = 0;
     E->dirty = 0;
     return 0;
 }

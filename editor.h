@@ -6,6 +6,8 @@
 #include <termios.h>
 #include <time.h>
 
+#include "undo.h"
+
 #define KILO_VERSION "0.0.1"
 
 struct editorSyntax;
@@ -36,6 +38,7 @@ struct editorConfig {
     time_t statusmsg_time;
     struct editorSyntax *syntax; /* Current syntax highlight, or NULL. */
     struct termios orig_termios; /* Saved terminal state for restore on exit. */
+    struct undoState undo;       /* Undo / redo stacks. */
 };
 
 enum KEY_ACTION {
@@ -50,6 +53,8 @@ enum KEY_ACTION {
     CTRL_Q = 17,
     CTRL_S = 19,
     CTRL_U = 21,
+    CTRL_Y = 25,        /* Redo */
+    CTRL_Z = 26,        /* Undo */
     ESC = 27,
     BACKSPACE = 127,
     ARROW_LEFT = 1000,
@@ -80,6 +85,11 @@ void editorInsertChar(struct editorConfig *E, int c);
 void editorInsertNewline(struct editorConfig *E);
 void editorDelChar(struct editorConfig *E);
 void editorMoveCursor(struct editorConfig *E, int key);
+
+/* High-level edits recorded as single undo units (paste, indent, etc.). */
+void editorUndoableInsertRow(struct editorConfig *E, int at, char *s, size_t len);
+void editorUndoableDeleteRow(struct editorConfig *E, int at);
+void editorUndoableInsertText(struct editorConfig *E, const char *s, size_t len);
 
 int editorFileWasModified(struct editorConfig *E);
 

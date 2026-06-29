@@ -6,6 +6,7 @@
 #include "output.h"
 #include "search.h"
 #include "terminal.h"
+#include "undo.h"
 
 #define KILO_QUIT_TIMES 3
 
@@ -37,6 +38,12 @@ void editorProcessKeypress(struct editorConfig *E, int fd) {
         break;
     case CTRL_S:        /* Ctrl-s */
         editorSave(E);
+        break;
+    case CTRL_Z:        /* Ctrl-z undo */
+        editorUndo(E);
+        break;
+    case CTRL_Y:        /* Ctrl-y redo */
+        editorRedo(E);
         break;
     case CTRL_F:
         editorFind(E, fd);
