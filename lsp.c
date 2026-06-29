@@ -53,8 +53,10 @@ void lspFree(struct lspClient *lsp) {
     freeCompletionItems(&lsp->completion);
     free(lsp->root_uri);
     free(lsp->doc_uri);
+    free(lsp->language_id);
     lsp->root_uri = NULL;
     lsp->doc_uri = NULL;
+    lsp->language_id = NULL;
     if (lsp->write_fd >= 0) close(lsp->write_fd);
     if (lsp->read_fd >= 0) close(lsp->read_fd);
     if (lsp->pid > 0) {
@@ -68,7 +70,7 @@ void lspFree(struct lspClient *lsp) {
     lsp->enabled = 0;
 }
 
-/* --- JSON helpers --- */
+/* --- string builder (always uses strlen for C strings) --- */
 
 static void abGrow(char **buf, size_t *len, size_t *cap, const char *s, size_t n) {
     if (*len + n + 1 > *cap) {
@@ -82,6 +84,10 @@ static void abGrow(char **buf, size_t *len, size_t *cap, const char *s, size_t n
     (*buf)[*len] = '\0';
 }
 
+static void abStr(char **buf, size_t *len, size_t *cap, const char *s) {
+    abGrow(buf, len, cap, s, strlen(s));
+}
+
 static void jsonEscapeAppend(char **buf, size_t *len, size_t *cap, const char *s, size_t n) {
     size_t i;
     for (i = 0; i < n; i++) {
@@ -89,19 +95,19 @@ static void jsonEscapeAppend(char **buf, size_t *len, size_t *cap, const char *s
         char tmp[8];
         if (c == '"' || c == '\\') {
             tmp[0] = '\\'; tmp[1] = (char)c; tmp[2] = '\0';
-            abGrow(buf, len, cap, tmp, 2);
+            abStr(buf, len, cap, tmp);
         } else if (c == '\n') {
-            abGrow(buf, len, cap, "\\n", 2);
+            abStr(buf, len, cap, "\\n");
         } else if (c == '\r') {
-            abGrow(buf, len, cap, "\\r", 2);
+            abStr(buf, len, cap, "\\r");
         } else if (c == '\t') {
-            abGrow(buf, len, cap, "\\t", 2);
+            abStr(buf, len, cap, "\\t");
         } else if (c < 0x20) {
             snprintf(tmp, sizeof(tmp), "\\u%04x", c);
-            abGrow(buf, len, cap, tmp, 6);
+            abStr(buf, len, cap, tmp);
         } else {
             tmp[0] = (char)c; tmp[1] = '\0';
-            abGrow(buf, len, cap, tmp, 1);
+            abStr(buf, len, cap, tmp);
         }
     }
 }
@@ -109,7 +115,7 @@ static void jsonEscapeAppend(char **buf, size_t *len, size_t *cap, const char *s
 static char *pathToFileUri(const char *path) {
     char resolved[PATH_MAX];
     const char *p;
-    char *uri;
+    char *uri = NULL;
     size_t len = 0, cap = 0;
 
     if (realpath(path, resolved))
@@ -117,24 +123,20 @@ static char *pathToFileUri(const char *path) {
     else
         p = path;
 
-    uri = NULL;
-    abGrow(&uri, &len, &cap, "file://", 7);
-    /* Simple encode: escape non-path-safe bytes minimally. */
-    {
-        const char *s = p;
-        while (*s) {
-            unsigned char c = (unsigned char)*s;
-            if (isalnum(c) || c == '/' || c == '.' || c == '_' || c == '-' || c == '~') {
-                abGrow(&uri, &len, &cap, s, 1);
-            } else if (c == ' ') {
-                abGrow(&uri, &len, &cap, "%20", 3);
-            } else {
-                char tmp[4];
-                snprintf(tmp, sizeof(tmp), "%%%02X", c);
-                abGrow(&uri, &len, &cap, tmp, 3);
-            }
-            s++;
+    abStr(&uri, &len, &cap, "file://");
+    while (*p) {
+        unsigned char c = (unsigned char)*p;
+        if (isalnum(c) || c == '/' || c == '.' || c == '_' || c == '-' || c == '~') {
+            char ch[2] = {(char)c, 0};
+            abStr(&uri, &len, &cap, ch);
+        } else if (c == ' ') {
+            abStr(&uri, &len, &cap, "%20");
+        } else {
+            char tmp[8];
+            snprintf(tmp, sizeof(tmp), "%%%02X", c);
+            abStr(&uri, &len, &cap, tmp);
         }
+        p++;
     }
     return uri;
 }
@@ -152,6 +154,20 @@ static char *dirname_uri(const char *file_uri) {
     return strdup("file:///");
 }
 
+/* Map filename -> LSP languageId, or NULL if unsupported. */
+static const char *detectLanguageId(const char *fn) {
+    size_t n;
+    if (!fn) return NULL;
+    n = strlen(fn);
+    if (n >= 5 && strcmp(fn + n - 5, ".tsx") == 0) return "typescriptreact";
+    if (n >= 5 && strcmp(fn + n - 5, ".jsx") == 0) return "javascriptreact";
+    if (n >= 4 && strcmp(fn + n - 4, ".ts") == 0) return "typescript";
+    if (n >= 4 && strcmp(fn + n - 4, ".mjs") == 0) return "javascript";
+    if (n >= 4 && strcmp(fn + n - 4, ".cjs") == 0) return "javascript";
+    if (n >= 3 && strcmp(fn + n - 3, ".js") == 0) return "javascript";
+    return NULL;
+}
+
 /* --- Process / RPC --- */
 
 static int lspWriteRaw(struct lspClient *lsp, const char *body, size_t body_len) {
@@ -159,12 +175,11 @@ static int lspWriteRaw(struct lspClient *lsp, const char *body, size_t body_len)
     int hlen = snprintf(header, sizeof(header),
                         "Content-Length: %zu\r\n\r\n", body_len);
     if (lsp->write_fd < 0) return -1;
-    if (write(lsp->write_fd, header, hlen) != hlen) return -1;
+    if (write(lsp->write_fd, header, (size_t)hlen) != hlen) return -1;
     if (write(lsp->write_fd, body, body_len) != (ssize_t)body_len) return -1;
     return 0;
 }
 
-/* Read one LSP message with timeout_ms. Caller frees *out_body. */
 static int lspReadMessage(struct lspClient *lsp, char **out_body, size_t *out_len,
                           int timeout_ms) {
     char header[4096];
@@ -177,7 +192,6 @@ static int lspReadMessage(struct lspClient *lsp, char **out_body, size_t *out_le
     *out_len = 0;
     if (lsp->read_fd < 0) return -1;
 
-    /* Read headers until \r\n\r\n */
     while (hlen + 1 < sizeof(header)) {
         fd_set rfds;
         struct timeval tv;
@@ -195,7 +209,7 @@ static int lspReadMessage(struct lspClient *lsp, char **out_body, size_t *out_le
         if (hlen >= 4 && header[hlen - 4] == '\r' && header[hlen - 3] == '\n' &&
             header[hlen - 2] == '\r' && header[hlen - 1] == '\n')
             break;
-        timeout_ms = 2000; /* subsequent bytes wait less aggressively as one msg */
+        timeout_ms = 3000;
     }
     header[hlen] = '\0';
 
@@ -210,7 +224,7 @@ static int lspReadMessage(struct lspClient *lsp, char **out_body, size_t *out_le
             if (*p == '\n') p++;
         }
     }
-    if (content_length < 0 || content_length > 8 * 1024 * 1024) return -1;
+    if (content_length < 0 || content_length > 16 * 1024 * 1024) return -1;
 
     body = malloc((size_t)content_length + 1);
     if (!body) return -1;
@@ -220,7 +234,7 @@ static int lspReadMessage(struct lspClient *lsp, char **out_body, size_t *out_le
         ssize_t n;
         FD_ZERO(&rfds);
         FD_SET(lsp->read_fd, &rfds);
-        tv.tv_sec = 2;
+        tv.tv_sec = 3;
         tv.tv_usec = 0;
         if (select(lsp->read_fd + 1, &rfds, NULL, NULL, &tv) <= 0) {
             free(body);
@@ -239,25 +253,28 @@ static int lspReadMessage(struct lspClient *lsp, char **out_body, size_t *out_le
     return 0;
 }
 
-/* Wait for response with matching id; ignore notifications / other messages. */
+static int responseHasId(const char *body, int id) {
+    char a[32], b[32];
+    snprintf(a, sizeof(a), "\"id\":%d", id);
+    snprintf(b, sizeof(b), "\"id\": %d", id);
+    if (!strstr(body, a) && !strstr(body, b)) return 0;
+    /* Responses have result or error at top level; skip server requests. */
+    if (strstr(body, "\"result\"") || strstr(body, "\"error\"")) return 1;
+    return 0;
+}
+
 static char *lspWaitResponse(struct lspClient *lsp, int id, int timeout_ms) {
     int spins = 0;
-    while (spins++ < 50) {
+    while (spins++ < 80) {
         char *body;
         size_t len;
-        char idbuf[32];
-
         if (lspReadMessage(lsp, &body, &len, timeout_ms) != 0)
             return NULL;
-        snprintf(idbuf, sizeof(idbuf), "\"id\":%d", id);
-        /* also allow "id": 1 with space */
-        if (strstr(body, idbuf) ||
-            (snprintf(idbuf, sizeof(idbuf), "\"id\": %d", id) > 0 && strstr(body, idbuf))) {
-            /* Ensure it's a response (has result or error), not a request echoing id */
-            if (strstr(body, "\"result\"") || strstr(body, "\"error\""))
-                return body;
-        }
+        if (responseHasId(body, id))
+            return body;
+        /* Drop notifications / other messages (e.g. window/logMessage). */
         free(body);
+        timeout_ms = 3000;
     }
     return NULL;
 }
@@ -266,11 +283,11 @@ static int lspNotify(struct lspClient *lsp, const char *method, const char *para
     char *body = NULL;
     size_t len = 0, cap = 0;
     int rc;
-    abGrow(&body, &len, &cap, "{\"jsonrpc\":\"2.0\",\"method\":\"", 28);
-    abGrow(&body, &len, &cap, method, strlen(method));
-    abGrow(&body, &len, &cap, "\",\"params\":", 11);
-    abGrow(&body, &len, &cap, params_json, strlen(params_json));
-    abGrow(&body, &len, &cap, "}", 1);
+    abStr(&body, &len, &cap, "{\"jsonrpc\":\"2.0\",\"method\":\"");
+    abStr(&body, &len, &cap, method);
+    abStr(&body, &len, &cap, "\",\"params\":");
+    abStr(&body, &len, &cap, params_json);
+    abStr(&body, &len, &cap, "}");
     rc = lspWriteRaw(lsp, body, len);
     free(body);
     return rc;
@@ -285,13 +302,13 @@ static char *lspRequest(struct lspClient *lsp, const char *method, const char *p
     char *resp;
 
     snprintf(idbuf, sizeof(idbuf), "%d", id);
-    abGrow(&body, &len, &cap, "{\"jsonrpc\":\"2.0\",\"id\":", 22);
-    abGrow(&body, &len, &cap, idbuf, strlen(idbuf));
-    abGrow(&body, &len, &cap, ",\"method\":\"", 11);
-    abGrow(&body, &len, &cap, method, strlen(method));
-    abGrow(&body, &len, &cap, "\",\"params\":", 11);
-    abGrow(&body, &len, &cap, params_json, strlen(params_json));
-    abGrow(&body, &len, &cap, "}", 1);
+    abStr(&body, &len, &cap, "{\"jsonrpc\":\"2.0\",\"id\":");
+    abStr(&body, &len, &cap, idbuf);
+    abStr(&body, &len, &cap, ",\"method\":\"");
+    abStr(&body, &len, &cap, method);
+    abStr(&body, &len, &cap, "\",\"params\":");
+    abStr(&body, &len, &cap, params_json);
+    abStr(&body, &len, &cap, "}");
     if (lspWriteRaw(lsp, body, len) != 0) {
         free(body);
         return NULL;
@@ -299,6 +316,43 @@ static char *lspRequest(struct lspClient *lsp, const char *method, const char *p
     free(body);
     resp = lspWaitResponse(lsp, id, timeout_ms);
     return resp;
+}
+
+static void killSpawned(struct lspClient *lsp) {
+    if (lsp->write_fd >= 0) { close(lsp->write_fd); lsp->write_fd = -1; }
+    if (lsp->read_fd >= 0) { close(lsp->read_fd); lsp->read_fd = -1; }
+    if (lsp->pid > 0) {
+        kill(lsp->pid, SIGTERM);
+        waitpid(lsp->pid, NULL, 0);
+        lsp->pid = -1;
+    }
+}
+
+/* Ensure nvm / homebrew node bins are visible when the editor was started
+ * with a minimal PATH (common for GUI / tooling launches). */
+static void augmentPathForNode(void) {
+    const char *home = getenv("HOME");
+    const char *old = getenv("PATH");
+    char extra[PATH_MAX * 2];
+    char combined[PATH_MAX * 4];
+    extra[0] = '\0';
+    if (home && home[0]) {
+        /* Prefer a stable nvm current link if present, else common version dirs. */
+        snprintf(extra, sizeof(extra),
+                 "%s/.nvm/versions/node/v24.11.0/bin:"
+                 "%s/.nvm/versions/node/v22.0.0/bin:"
+                 "%s/.nvm/versions/node/v20.0.0/bin:"
+                 "%s/.local/bin:/opt/homebrew/bin:/usr/local/bin",
+                 home, home, home, home);
+    } else {
+        snprintf(extra, sizeof(extra),
+                 "/opt/homebrew/bin:/usr/local/bin");
+    }
+    if (old && old[0])
+        snprintf(combined, sizeof(combined), "%s:%s", extra, old);
+    else
+        snprintf(combined, sizeof(combined), "%s", extra);
+    setenv("PATH", combined, 1);
 }
 
 static int spawnServer(struct lspClient *lsp, char *const argv[]) {
@@ -311,14 +365,16 @@ static int spawnServer(struct lspClient *lsp, char *const argv[]) {
     if (pid == 0) {
         dup2(in_pipe[0], STDIN_FILENO);
         dup2(out_pipe[1], STDOUT_FILENO);
-        /* Keep stderr for debugging or silence it */
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) {
-            dup2(devnull, STDERR_FILENO);
-            close(devnull);
+        {
+            int devnull = open("/dev/null", O_WRONLY);
+            if (devnull >= 0) {
+                dup2(devnull, STDERR_FILENO);
+                close(devnull);
+            }
         }
         close(in_pipe[0]); close(in_pipe[1]);
         close(out_pipe[0]); close(out_pipe[1]);
+        augmentPathForNode();
         execvp(argv[0], argv);
         _exit(127);
     }
@@ -327,67 +383,80 @@ static int spawnServer(struct lspClient *lsp, char *const argv[]) {
     lsp->pid = pid;
     lsp->write_fd = in_pipe[1];
     lsp->read_fd = out_pipe[0];
+
+    /* Give the process a moment; fail fast if execvp failed. */
+    usleep(50000);
+    {
+        int status;
+        pid_t r = waitpid(pid, &status, WNOHANG);
+        if (r == pid) {
+            lsp->pid = -1;
+            close(lsp->write_fd); lsp->write_fd = -1;
+            close(lsp->read_fd); lsp->read_fd = -1;
+            return -1;
+        }
+    }
     return 0;
 }
 
+/* Try Node-based language servers for JS/TS. */
 static int tryStartServer(struct lspClient *lsp) {
-    /* Prefer python-lsp-server, then pyright, then jedi-language-server. */
-    char *attempts[][4] = {
-        {"pylsp", NULL, NULL, NULL},
-        {"python3", "-m", "pylsp", NULL},
-        {"pyright-langserver", "--stdio", NULL, NULL},
-        {"jedi-language-server", NULL, NULL, NULL},
+    char *attempts[][5] = {
+        {"typescript-language-server", "--stdio", NULL, NULL, NULL},
+        {"npx", "--yes", "typescript-language-server", "--stdio", NULL},
     };
     size_t i;
     for (i = 0; i < sizeof(attempts) / sizeof(attempts[0]); i++) {
-        if (spawnServer(lsp, attempts[i]) != 0) continue;
-        /* Probe with initialize quickly — if exec failed, read fails. */
-        return 0;
+        killSpawned(lsp);
+        if (spawnServer(lsp, attempts[i]) == 0)
+            return 0;
     }
+    killSpawned(lsp);
     return -1;
 }
 
-int lspStartPython(struct editorConfig *E) {
+int lspStart(struct editorConfig *E) {
     struct lspClient *lsp = &E->lsp;
     char *params = NULL;
     size_t plen = 0, pcap = 0;
     char *resp;
     const char *fn = E->filename ? E->filename : "";
+    const char *lang;
 
     lspStop(E);
     lspInit(lsp);
 
-    /* Only for Python sources. */
-    {
-        size_t n = strlen(fn);
-        if (n < 3 || strcmp(fn + n - 3, ".py") != 0) {
-            lsp->enabled = 0;
-            return 0;
-        }
+    lang = detectLanguageId(fn);
+    if (!lang) {
+        lsp->enabled = 0;
+        return 0;
     }
+    lsp->language_id = strdup(lang);
 
     if (tryStartServer(lsp) != 0) {
         editorSetStatusMessage(E,
-            "LSP: no Python server (install python-lsp-server: pip install python-lsp-server)");
+            "LSP: install with: npm i -g typescript typescript-language-server");
         return -1;
     }
 
     lsp->doc_uri = pathToFileUri(fn);
     lsp->root_uri = dirname_uri(lsp->doc_uri);
     lsp->version = 1;
+    lsp->next_id = 1;
 
-    abGrow(&params, &plen, &pcap,
-           "{\"processId\":null,\"rootUri\":\"", 28);
-    abGrow(&params, &plen, &pcap, lsp->root_uri, strlen(lsp->root_uri));
-    abGrow(&params, &plen, &pcap,
-           "\",\"capabilities\":{\"textDocument\":{\"completion\":{"
-           "\"completionItem\":{\"snippetSupport\":false}}}},"
-           "\"workspaceFolders\":null}", 120);
+    /* Minimal initialize — lengths via abStr (no hardcoded wrong sizes). */
+    abStr(&params, &plen, &pcap, "{\"processId\":null,\"rootUri\":\"");
+    abStr(&params, &plen, &pcap, lsp->root_uri);
+    abStr(&params, &plen, &pcap,
+          "\",\"capabilities\":{\"textDocument\":{\"completion\":{"
+          "\"completionItem\":{\"snippetSupport\":false}}}},"
+          "\"workspaceFolders\":null}");
 
-    resp = lspRequest(lsp, "initialize", params, 5000);
+    resp = lspRequest(lsp, "initialize", params, 8000);
     free(params);
     if (!resp) {
-        editorSetStatusMessage(E, "LSP: initialize failed (is pylsp installed?)");
+        editorSetStatusMessage(E,
+            "LSP: initialize failed (npm i -g typescript typescript-language-server)");
         lspStop(E);
         return -1;
     }
@@ -397,7 +466,7 @@ int lspStartPython(struct editorConfig *E) {
     lsp->ready = 1;
     lsp->enabled = 1;
     lspDidOpen(E);
-    editorSetStatusMessage(E, "LSP: Python language server ready");
+    editorSetStatusMessage(E, "LSP: Node/TS language server ready (%s)", lang);
     return 0;
 }
 
@@ -412,22 +481,25 @@ static char *documentParams(struct editorConfig *E, int with_text) {
     char *p = NULL;
     size_t len = 0, cap = 0;
     char ver[16];
+    const char *lang = E->lsp.language_id ? E->lsp.language_id : "javascript";
 
     snprintf(ver, sizeof(ver), "%d", E->lsp.version);
-    abGrow(&p, &len, &cap, "{\"textDocument\":{\"uri\":\"", 24);
-    abGrow(&p, &len, &cap, E->lsp.doc_uri, strlen(E->lsp.doc_uri));
+    abStr(&p, &len, &cap, "{\"textDocument\":{\"uri\":\"");
+    abStr(&p, &len, &cap, E->lsp.doc_uri);
     if (with_text) {
         int buflen = 0;
         char *text = editorRowsToString(E, &buflen);
-        abGrow(&p, &len, &cap, "\",\"languageId\":\"python\",\"version\":", 34);
-        abGrow(&p, &len, &cap, ver, strlen(ver));
-        abGrow(&p, &len, &cap, ",\"text\":\"", 9);
+        abStr(&p, &len, &cap, "\",\"languageId\":\"");
+        abStr(&p, &len, &cap, lang);
+        abStr(&p, &len, &cap, "\",\"version\":");
+        abStr(&p, &len, &cap, ver);
+        abStr(&p, &len, &cap, ",\"text\":\"");
         if (text)
             jsonEscapeAppend(&p, &len, &cap, text, (size_t)buflen);
         free(text);
-        abGrow(&p, &len, &cap, "\"}}", 3);
+        abStr(&p, &len, &cap, "\"}}");
     } else {
-        abGrow(&p, &len, &cap, "\"}}", 3);
+        abStr(&p, &len, &cap, "\"}}");
     }
     return p;
 }
@@ -451,16 +523,15 @@ void lspDidChange(struct editorConfig *E) {
     E->lsp.version++;
     snprintf(ver, sizeof(ver), "%d", E->lsp.version);
     text = editorRowsToString(E, &buflen);
-    abGrow(&p, &len, &cap, "{\"textDocument\":{\"uri\":\"", 24);
-    abGrow(&p, &len, &cap, E->lsp.doc_uri, strlen(E->lsp.doc_uri));
-    abGrow(&p, &len, &cap, "\",\"version\":", 12);
-    abGrow(&p, &len, &cap, ver, strlen(ver));
-    abGrow(&p, &len, &cap,
-           "},\"contentChanges\":[{\"text\":\"", 29);
+    abStr(&p, &len, &cap, "{\"textDocument\":{\"uri\":\"");
+    abStr(&p, &len, &cap, E->lsp.doc_uri);
+    abStr(&p, &len, &cap, "\",\"version\":");
+    abStr(&p, &len, &cap, ver);
+    abStr(&p, &len, &cap, "},\"contentChanges\":[{\"text\":\"");
     if (text)
         jsonEscapeAppend(&p, &len, &cap, text, (size_t)buflen);
     free(text);
-    abGrow(&p, &len, &cap, "\"}]}", 4);
+    abStr(&p, &len, &cap, "\"}]}");
     lspNotify(&E->lsp, "textDocument/didChange", p);
     free(p);
 }
@@ -473,11 +544,10 @@ void lspDidClose(struct editorConfig *E) {
     free(p);
 }
 
-/* Extract JSON string value after key; returns malloc'd unescaped string. */
 static char *jsonExtractString(const char *json, const char *key) {
     char pattern[128];
-    const char *p, *start;
-    char *out;
+    const char *p;
+    char *out = NULL;
     size_t len = 0, cap = 0;
 
     snprintf(pattern, sizeof(pattern), "\"%s\"", key);
@@ -490,26 +560,27 @@ static char *jsonExtractString(const char *json, const char *key) {
     while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
     if (*p != '"') return NULL;
     p++;
-    start = p;
-    out = NULL;
     while (*p && *p != '"') {
         if (*p == '\\' && p[1]) {
             p++;
-            if (*p == 'n') abGrow(&out, &len, &cap, "\n", 1);
-            else if (*p == 't') abGrow(&out, &len, &cap, "\t", 1);
-            else if (*p == 'r') abGrow(&out, &len, &cap, "\r", 1);
-            else if (*p == '"' || *p == '\\' || *p == '/')
-                abGrow(&out, &len, &cap, p, 1);
-            else if (*p == 'u' && p[1] && p[2] && p[3] && p[4])
-                p += 4; /* skip unicode for labels */
-            else
-                abGrow(&out, &len, &cap, p, 1);
+            if (*p == 'n') abStr(&out, &len, &cap, "\n");
+            else if (*p == 't') abStr(&out, &len, &cap, "\t");
+            else if (*p == 'r') abStr(&out, &len, &cap, "\r");
+            else if (*p == '"' || *p == '\\' || *p == '/') {
+                char ch[2] = {*p, 0};
+                abStr(&out, &len, &cap, ch);
+            } else if (*p == 'u' && p[1] && p[2] && p[3] && p[4]) {
+                p += 4;
+            } else {
+                char ch[2] = {*p, 0};
+                abStr(&out, &len, &cap, ch);
+            }
             p++;
         } else {
-            abGrow(&out, &len, &cap, p, 1);
+            char ch[2] = {*p, 0};
+            abStr(&out, &len, &cap, ch);
             p++;
         }
-        (void)start;
     }
     if (!out) {
         out = malloc(1);
@@ -518,7 +589,6 @@ static char *jsonExtractString(const char *json, const char *key) {
     return out;
 }
 
-/* Parse completion items from result JSON (array or {items:[]}). */
 static void parseCompletionResult(struct lspCompletion *comp, const char *json) {
     const char *p;
     const char *items = strstr(json, "\"items\"");
@@ -532,7 +602,7 @@ static void parseCompletionResult(struct lspCompletion *comp, const char *json) 
         p = strchr(p, '[');
     }
     if (!p) return;
-    p++; /* inside array */
+    p++;
 
     while (*p && *p != ']' && comp->nitems < LSP_COMPLETION_MAX) {
         const char *obj;
@@ -542,7 +612,6 @@ static void parseCompletionResult(struct lspCompletion *comp, const char *json) 
         while (*p && *p != '{' && *p != ']') p++;
         if (*p != '{') break;
         obj = p;
-        /* Find matching end brace at depth 1 — simple scan */
         {
             int depth = 0;
             const char *q = p;
@@ -574,7 +643,26 @@ static void parseCompletionResult(struct lspCompletion *comp, const char *json) 
             free(objbuf);
         }
         if (label) {
+            /* Skip snippet placeholders for simplicity — strip $0 etc. */
             int i = comp->nitems++;
+            if (insertText) {
+                char *d = insertText;
+                char *s = insertText;
+                while (*s) {
+                    if (*s == '$' && (s[1] == '0' || s[1] == '{' || isdigit((unsigned char)s[1]))) {
+                        if (s[1] == '{') {
+                            while (*s && *s != '}') s++;
+                            if (*s == '}') s++;
+                        } else {
+                            s++;
+                            while (isdigit((unsigned char)*s)) s++;
+                        }
+                        continue;
+                    }
+                    *d++ = *s++;
+                }
+                *d = '\0';
+            }
             comp->items[i].label = label;
             comp->items[i].insertText = insertText ? insertText : strdup(label);
         } else {
@@ -589,10 +677,9 @@ static void parseCompletionResult(struct lspCompletion *comp, const char *json) 
 }
 
 static int isIdentChar(int c) {
-    return isalnum(c) || c == '_';
+    return isalnum((unsigned char)c) || c == '_' || c == '$';
 }
 
-/* Word start column for completion replace range. */
 static int completionStartCol(struct editorConfig *E, int row, int col) {
     erow *r;
     if (row < 0 || row >= E->numrows) return col;
@@ -605,7 +692,7 @@ static int completionStartCol(struct editorConfig *E, int row, int col) {
 
 int lspShouldTrigger(struct editorConfig *E, int c) {
     if (!E->lsp.enabled || !E->lsp.ready) return 0;
-    if (c == '.') return 1;
+    if (c == '.' || c == '(') return 1;
     if (isIdentChar(c)) return 1;
     return 0;
 }
@@ -621,21 +708,20 @@ int lspRequestCompletion(struct editorConfig *E) {
     if (!E->lsp.ready) return -1;
     if (filerow < 0) return -1;
 
-    /* Sync buffer to server before completing. */
     lspDidChange(E);
 
     snprintf(linebuf, sizeof(linebuf), "%d", filerow);
     snprintf(charbuf, sizeof(charbuf), "%d", filecol);
 
-    abGrow(&params, &len, &cap, "{\"textDocument\":{\"uri\":\"", 24);
-    abGrow(&params, &len, &cap, E->lsp.doc_uri, strlen(E->lsp.doc_uri));
-    abGrow(&params, &len, &cap, "\"},\"position\":{\"line\":", 22);
-    abGrow(&params, &len, &cap, linebuf, strlen(linebuf));
-    abGrow(&params, &len, &cap, ",\"character\":", 13);
-    abGrow(&params, &len, &cap, charbuf, strlen(charbuf));
-    abGrow(&params, &len, &cap, "}}", 2);
+    abStr(&params, &len, &cap, "{\"textDocument\":{\"uri\":\"");
+    abStr(&params, &len, &cap, E->lsp.doc_uri);
+    abStr(&params, &len, &cap, "\"},\"position\":{\"line\":");
+    abStr(&params, &len, &cap, linebuf);
+    abStr(&params, &len, &cap, ",\"character\":");
+    abStr(&params, &len, &cap, charbuf);
+    abStr(&params, &len, &cap, "}}");
 
-    resp = lspRequest(&E->lsp, "textDocument/completion", params, 3000);
+    resp = lspRequest(&E->lsp, "textDocument/completion", params, 4000);
     free(params);
     if (!resp) {
         lspClearCompletion(E);
@@ -695,9 +781,9 @@ int lspCompletionAccept(struct editorConfig *E) {
 
     undoBeginGroup(E);
     if (del_len > 0) {
-        char *old = malloc(del_len + 1);
+        char *old = malloc((size_t)del_len + 1);
         if (old) {
-            memcpy(old, row->chars + start_col, del_len);
+            memcpy(old, row->chars + start_col, (size_t)del_len);
             old[del_len] = '\0';
             undoPushAtom(E, U_DELETE_TEXT, filerow, start_col, old, (size_t)del_len);
             free(old);
@@ -716,29 +802,20 @@ int lspCompletionAccept(struct editorConfig *E) {
         undoApplyInsertText(E, filerow, start_col, text, tlen);
         E->undo.suspend = prev;
     }
-    /* Move cursor to end of inserted text (character coords). */
     {
         int newcol = start_col + (int)tlen;
-        E->rowoff = filerow > E->cy ? filerow - E->cy : 0;
-        /* Keep cy; adjust cx/coloff for newcol */
-        if (newcol < editorTextCols(E)) {
-            E->cx = newcol;
-            E->coloff = 0;
-        } else {
-            E->coloff = newcol - editorTextCols(E) + 1;
-            E->cx = editorTextCols(E) - 1;
-        }
-        /* Prefer placing cursor on same screen row as filerow */
         if (filerow >= E->rowoff && filerow < E->rowoff + E->screenrows)
             E->cy = filerow - E->rowoff;
         else {
             E->rowoff = filerow;
             E->cy = 0;
         }
-        E->cx = newcol - E->coloff;
-        if (E->cx < 0) {
-            E->coloff += E->cx;
-            E->cx = 0;
+        if (newcol < editorTextCols(E)) {
+            E->cx = newcol;
+            E->coloff = 0;
+        } else {
+            E->coloff = newcol - editorTextCols(E) + 1;
+            E->cx = editorTextCols(E) - 1;
         }
     }
     E->dirty++;

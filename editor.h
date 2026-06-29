@@ -40,7 +40,7 @@ struct editorConfig {
     struct editorSyntax *syntax; /* Current syntax highlight, or NULL. */
     struct termios orig_termios; /* Saved terminal state for restore on exit. */
     struct undoState undo;       /* Undo / redo stacks. */
-    struct lspClient lsp;        /* Language server (Python autocomplete). */
+    struct lspClient lsp;        /* Language server (Node/JS/TS autocomplete). */
 };
 
 enum KEY_ACTION {

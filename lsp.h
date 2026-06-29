@@ -29,6 +29,7 @@ struct lspClient {
     int enabled;
     char *root_uri;
     char *doc_uri;
+    char *language_id; /* "javascript" or "typescript" */
     int version;
     struct lspCompletion completion;
 };
@@ -36,24 +37,21 @@ struct lspClient {
 void lspInit(struct lspClient *lsp);
 void lspFree(struct lspClient *lsp);
 
-/* Start Python LSP for .py files (pylsp / pyright / jedi). */
-int lspStartPython(struct editorConfig *E);
+/* Start Node/JS/TS LSP for .js/.jsx/.mjs/.cjs/.ts/.tsx files. */
+int lspStart(struct editorConfig *E);
 void lspStop(struct editorConfig *E);
 
 void lspDidOpen(struct editorConfig *E);
 void lspDidChange(struct editorConfig *E);
 void lspDidClose(struct editorConfig *E);
 
-/* Request completions at cursor; fills E->lsp.completion when successful. */
 int lspRequestCompletion(struct editorConfig *E);
 
 void lspClearCompletion(struct editorConfig *E);
 void lspCompletionNext(struct editorConfig *E);
 void lspCompletionPrev(struct editorConfig *E);
-/* Apply selected item (undoable). Returns 1 if applied. */
 int lspCompletionAccept(struct editorConfig *E);
 
-/* True if we should query completions after inserting character c. */
 int lspShouldTrigger(struct editorConfig *E, int c);
 
 #endif

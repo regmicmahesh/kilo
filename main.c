@@ -56,7 +56,7 @@ int main(int argc, char **argv) {
     editorSelectSyntaxHighlight(&E, argv[1]);
     editorOpen(&E, argv[1]);
     enableRawMode(&E, STDIN_FILENO);
-    lspStartPython(&E);
+    lspStart(&E);
     editorSetStatusMessage(&E,
         "HELP: Ctrl-S save | Ctrl-F find | Ctrl-H replace | Ctrl-Z/Y undo | "
         "LSP: Ctrl-N/P nav, Tab accept");
