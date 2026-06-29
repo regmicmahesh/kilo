@@ -1,32 +1,16 @@
-#ifdef __linux__
-#define _POSIX_C_SOURCE 200809L
-#endif
-
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <signal.h>
 
 #include "editor.h"
 #include "syntax.h"
-#include "terminal.h"
 #include "output.h"
 #include "undo.h"
-
-/* Signal handlers have a fixed signature, so we keep one pointer solely
- * for SIGWINCH. It is set once from initEditor and never used as shared
- * mutable app state elsewhere. */
-static struct editorConfig *sigwinch_editor;
+#include "gui.h"
 
 void updateWindowSize(struct editorConfig *E) {
-    if (getWindowSize(STDIN_FILENO, STDOUT_FILENO,
-                      &E->screenrows, &E->screencols) == -1) {
-        perror("Unable to query the screen for size (columns / rows)");
-        exit(1);
-    }
-    E->screenrows -= 2; /* Get room for status bar. */
+    guiUpdateEditorSize(E);
 }
 
 /* Digits needed for the largest line number, plus one padding column. */
@@ -46,15 +30,6 @@ int editorTextCols(const struct editorConfig *E) {
     return cols > 1 ? cols : 1;
 }
 
-static void handleSigWinCh(int unused __attribute__((unused))) {
-    struct editorConfig *E = sigwinch_editor;
-    if (!E) return;
-    updateWindowSize(E);
-    if (E->cy > E->screenrows) E->cy = E->screenrows - 1;
-    if (E->cx > editorTextCols(E)) E->cx = editorTextCols(E) - 1;
-    editorRefreshScreen(E);
-}
-
 void initEditor(struct editorConfig *E) {
     E->cx = 0;
     E->cy = 0;
@@ -65,14 +40,13 @@ void initEditor(struct editorConfig *E) {
     E->dirty = 0;
     E->filename = NULL;
     E->syntax = NULL;
-    E->rawmode = 0;
     E->statusmsg[0] = '\0';
     E->statusmsg_time = 0;
+    E->screenrows = 40;
+    E->screencols = 100;
     undoInit(&E->undo);
     lspInit(&E->lsp);
-    sigwinch_editor = E;
     updateWindowSize(E);
-    signal(SIGWINCH, handleSigWinCh);
 }
 
 /* Update the rendered version and the syntax highlight of a row. */

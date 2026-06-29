@@ -11,7 +11,7 @@
 #include "search.h"
 #include "output.h"
 #include "syntax.h"
-#include "terminal.h"
+#include "gui.h"
 #include "undo.h"
 
 #define KILO_QUERY_LEN 256
@@ -320,7 +320,7 @@ static int replaceOne(struct editorConfig *E, regex_t *re,
     return m->col + (int)elen;
 }
 
-void editorFind(struct editorConfig *E, int fd) {
+void editorFind(struct editorConfig *E) {
     char query[KILO_QUERY_LEN + 1] = {0};
     int qlen = 0;
     int last_row = -1, last_col = 0, last_len = 0;
@@ -342,7 +342,7 @@ void editorFind(struct editorConfig *E, int fd) {
                 "Search (regex): %s  (ESC/Arrows/Enter)", query);
         editorRefreshScreen(E);
 
-        int c = editorReadKey(fd);
+        int c = guiWaitKey();
         if (c == DEL_KEY || c == BACKSPACE) {
             if (qlen != 0) query[--qlen] = '\0';
             have_match = 0;
@@ -419,7 +419,7 @@ void editorFind(struct editorConfig *E, int fd) {
     }
 }
 
-void editorFindReplace(struct editorConfig *E, int fd) {
+void editorFindReplace(struct editorConfig *E) {
     char findbuf[KILO_QUERY_LEN + 1] = {0};
     char replbuf[KILO_QUERY_LEN + 1] = {0};
     int flen = 0, rlen = 0;
@@ -447,7 +447,7 @@ void editorFindReplace(struct editorConfig *E, int fd) {
                 focus == 1 ? ">" : " ", replbuf);
         editorRefreshScreen(E);
 
-        int c = editorReadKey(fd);
+        int c = guiWaitKey();
 
         if (c == ESC) {
             E->cx = saved_cx; E->cy = saved_cy;

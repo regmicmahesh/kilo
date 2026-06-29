@@ -2,184 +2,148 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
 
 #include "output.h"
-#include "buffer.h"
+#include "gui.h"
 #include "syntax.h"
 #include "lsp.h"
 
-/* This function writes the whole screen using VT100 escape characters
- * starting from the logical state of the editor. */
+static void hlColor(int hl, float *r, float *g, float *b) {
+    switch (hl) {
+    case HL_COMMENT:
+    case HL_MLCOMMENT: *r = 0.4f; *g = 0.75f; *b = 0.75f; break;
+    case HL_KEYWORD1:  *r = 0.95f; *g = 0.75f; *b = 0.35f; break;
+    case HL_KEYWORD2:  *r = 0.45f; *g = 0.85f; *b = 0.45f; break;
+    case HL_STRING:    *r = 0.85f; *g = 0.55f; *b = 0.85f; break;
+    case HL_NUMBER:    *r = 0.95f; *g = 0.45f; *b = 0.45f; break;
+    case HL_MATCH:     *r = 0.35f; *g = 0.65f; *b = 1.0f; break;
+    case HL_NONPRINT:  *r = 0.7f; *g = 0.7f; *b = 0.7f; break;
+    default:           *r = 0.90f; *g = 0.90f; *b = 0.92f; break;
+    }
+}
+
 void editorRefreshScreen(struct editorConfig *E) {
     int y;
-    erow *r;
-    char buf[64];
-    struct abuf ab = ABUF_INIT;
     int gutter = editorGutterWidth(E);
     int textcols = editorTextCols(E);
     int cur_filerow = E->rowoff + E->cy;
+    char title[256];
+    char gutterbuf[32];
+    int status_row = E->screenrows;
 
-    abAppend(&ab, "\x1b[?25l", 6); /* Hide cursor. */
-    abAppend(&ab, "\x1b[H", 3); /* Go home. */
+    guiUpdateEditorSize(E);
+    gutter = editorGutterWidth(E);
+    textcols = editorTextCols(E);
+    status_row = E->screenrows;
+
+    snprintf(title, sizeof(title), "kilo — %s%s",
+             E->filename ? E->filename : "[No Name]",
+             E->dirty ? " *" : "");
+    guiSetTitle(title);
+
+    guiBeginFrame();
+
+    /* Editor background */
+    guiFillRect(0, 0, (float)guiWinW(), (float)(status_row * guiCellH()),
+                0.11f, 0.12f, 0.15f, 1.0f);
+
     for (y = 0; y < E->screenrows; y++) {
         int filerow = E->rowoff + y;
         int is_current = (filerow == cur_filerow);
-        char gutterbuf[32];
         int gwritten;
 
         if (filerow >= E->numrows) {
-            /* Empty gutter + tilde for lines past EOF. */
             snprintf(gutterbuf, sizeof(gutterbuf), "%*s", gutter, "");
-            abAppend(&ab, "\x1b[90m", 5); /* bright black / grey */
-            abAppend(&ab, gutterbuf, gutter);
-            abAppend(&ab, "\x1b[39m", 5);
+            guiDrawTextCell(0, y, gutterbuf, gutter, 0.35f, 0.38f, 0.42f);
+            guiDrawTextCell(gutter, y, "~", 1, 0.35f, 0.38f, 0.42f);
             if (E->numrows == 0 && y == E->screenrows / 3) {
                 char welcome[80];
                 int welcomelen = snprintf(welcome, sizeof(welcome),
-                    "Kilo editor -- verison %s", KILO_VERSION);
+                    "Kilo GUI editor — v%s (SDL/OpenGL)", KILO_VERSION);
                 int padding = (textcols - welcomelen) / 2;
                 if (padding < 0) padding = 0;
-                if (padding) {
-                    abAppend(&ab, "~", 1);
-                    padding--;
-                }
-                while (padding--) abAppend(&ab, " ", 1);
-                if (welcomelen > textcols) welcomelen = textcols;
-                abAppend(&ab, welcome, welcomelen);
-                abAppend(&ab, "\x1b[0K\r\n", 6);
-            } else {
-                abAppend(&ab, "~\x1b[0K\r\n", 7);
+                guiDrawTextCell(gutter + padding, y, welcome, welcomelen,
+                                0.7f, 0.75f, 0.85f);
             }
             continue;
         }
 
-        /* Line number gutter (right-aligned), highlighted on current line. */
+        /* Current line highlight across text area */
+        if (is_current) {
+            guiFillCellRow(0, y, E->screencols, 0.16f, 0.18f, 0.24f, 1.0f);
+            guiFillCellRow(0, y, gutter, 0.20f, 0.35f, 0.55f, 1.0f);
+        } else {
+            guiFillCellRow(0, y, gutter, 0.13f, 0.14f, 0.17f, 1.0f);
+        }
+
         gwritten = snprintf(gutterbuf, sizeof(gutterbuf), "%*d ",
                             gutter - 1, filerow + 1);
         if (gwritten > gutter) gwritten = gutter;
-        if (is_current) {
-            /* Reverse video + bold for the current line number. */
-            abAppend(&ab, "\x1b[7m\x1b[1m", 8);
-            abAppend(&ab, gutterbuf, gwritten);
-            abAppend(&ab, "\x1b[0m", 4);
-        } else {
-            abAppend(&ab, "\x1b[90m", 5);
-            abAppend(&ab, gutterbuf, gwritten);
-            abAppend(&ab, "\x1b[39m", 5);
-        }
-
-        r = &E->row[filerow];
-
-        /* Current line body: subtle reverse dim background via 7m on spaces
-         * is too strong; use a soft inverted row prefix instead — apply
-         * reverse only when drawing, with normal syntax colors preferred.
-         * We use a dark background when the terminal supports it; fall back
-         * to bold text for the whole current line when drawing HL_NORMAL. */
         if (is_current)
-            abAppend(&ab, "\x1b[48;5;236m", 11); /* grey background */
+            guiDrawTextCell(0, y, gutterbuf, gwritten, 1.0f, 1.0f, 1.0f);
+        else
+            guiDrawTextCell(0, y, gutterbuf, gwritten, 0.45f, 0.48f, 0.55f);
 
-        int len = r->rsize - E->coloff;
-        int current_color = -1;
-        if (len > 0) {
-            if (len > textcols) len = textcols;
-            char *c = r->render + E->coloff;
-            unsigned char *hl = r->hl + E->coloff;
+        {
+            erow *r = &E->row[filerow];
+            int len = r->rsize - E->coloff;
             int j;
+            if (len < 0) len = 0;
+            if (len > textcols) len = textcols;
             for (j = 0; j < len; j++) {
-                if (hl[j] == HL_NONPRINT) {
-                    char sym;
-                    abAppend(&ab, "\x1b[7m", 4);
-                    if (c[j] <= 26)
-                        sym = '@' + c[j];
-                    else
-                        sym = '?';
-                    abAppend(&ab, &sym, 1);
-                    abAppend(&ab, "\x1b[0m", 4);
-                    if (is_current)
-                        abAppend(&ab, "\x1b[48;5;236m", 11);
-                    current_color = -1;
-                } else if (hl[j] == HL_NORMAL) {
-                    if (current_color != -1) {
-                        abAppend(&ab, "\x1b[39m", 5);
-                        current_color = -1;
-                    }
-                    abAppend(&ab, c + j, 1);
+                unsigned char *hl = r->hl ? r->hl + E->coloff : NULL;
+                char ch = r->render[E->coloff + j];
+                float cr, cg, cb;
+                int hlt = hl ? hl[j] : HL_NORMAL;
+                if (hlt == HL_NONPRINT) {
+                    char sym = (ch <= 26) ? (char)('@' + ch) : '?';
+                    guiFillCellRow(gutter + j, y, 1, 0.5f, 0.5f, 0.2f, 1.0f);
+                    guiDrawTextCell(gutter + j, y, &sym, 1, 0.9f, 0.9f, 0.5f);
                 } else {
-                    int color = editorSyntaxToColor(hl[j]);
-                    if (color != current_color) {
-                        char cbuf[16];
-                        int clen = snprintf(cbuf, sizeof(cbuf), "\x1b[%dm", color);
-                        current_color = color;
-                        abAppend(&ab, cbuf, clen);
-                    }
-                    abAppend(&ab, c + j, 1);
+                    hlColor(hlt, &cr, &cg, &cb);
+                    if (hlt == HL_MATCH)
+                        guiFillCellRow(gutter + j, y, 1, 0.15f, 0.25f, 0.45f, 1.0f);
+                    guiDrawTextCell(gutter + j, y, &ch, 1, cr, cg, cb);
                 }
             }
         }
-
-        /* Extend current-line background to the end of the text area. */
-        if (is_current) {
-            int pad = textcols - (len > 0 ? len : 0);
-            if (pad < 0) pad = 0;
-            while (pad--) abAppend(&ab, " ", 1);
-            abAppend(&ab, "\x1b[49m", 5); /* reset background */
-        }
-
-        abAppend(&ab, "\x1b[39m", 5);
-        abAppend(&ab, "\x1b[0K", 4);
-        abAppend(&ab, "\r\n", 2);
     }
 
-    /* Create a two rows status. First row: */
-    abAppend(&ab, "\x1b[0K", 4);
-    abAppend(&ab, "\x1b[7m", 4);
-    char status[80], rstatus[80];
-    int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
-        E->filename, E->numrows, E->dirty ? "(modified)" : "");
-    int rlen = snprintf(rstatus, sizeof(rstatus),
-        "%d/%d", E->rowoff + E->cy + 1, E->numrows);
-    if (len > E->screencols) len = E->screencols;
-    abAppend(&ab, status, len);
-    while (len < E->screencols) {
-        if (E->screencols - len == rlen) {
-            abAppend(&ab, rstatus, rlen);
-            break;
-        } else {
-            abAppend(&ab, " ", 1);
-            len++;
+    /* Status bar */
+    guiFillCellRow(0, status_row, E->screencols, 0.22f, 0.24f, 0.30f, 1.0f);
+    {
+        char status[128], rstatus[64];
+        int len = snprintf(status, sizeof(status), " %s — %d lines%s ",
+            E->filename ? E->filename : "[No Name]", E->numrows,
+            E->dirty ? " (modified)" : "");
+        int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d ",
+            E->rowoff + E->cy + 1, E->numrows > 0 ? E->numrows : 1);
+        if (len > E->screencols) len = E->screencols;
+        guiDrawTextCell(0, status_row, status, len, 0.95f, 0.95f, 0.97f);
+        if (rlen < E->screencols)
+            guiDrawTextCell(E->screencols - rlen, status_row, rstatus, rlen,
+                            0.75f, 0.78f, 0.85f);
+    }
+
+    /* Message bar */
+    guiFillCellRow(0, status_row + 1, E->screencols, 0.14f, 0.15f, 0.18f, 1.0f);
+    {
+        int msglen = (int)strlen(E->statusmsg);
+        if (msglen && time(NULL) - E->statusmsg_time < 8) {
+            if (msglen > E->screencols) msglen = E->screencols;
+            guiDrawTextCell(0, status_row + 1, E->statusmsg, msglen,
+                            0.85f, 0.88f, 0.55f);
         }
     }
-    abAppend(&ab, "\x1b[0m\r\n", 6);
 
-    /* Second row depends on E->statusmsg and the status message update time. */
-    abAppend(&ab, "\x1b[0K", 4);
-    int msglen = strlen(E->statusmsg);
-    if (msglen && time(NULL) - E->statusmsg_time < 5)
-        abAppend(&ab, E->statusmsg, msglen <= E->screencols ? msglen : E->screencols);
-
-    /* Cursor in text area (1-based), shifted right by the gutter. */
-    int j;
-    int cx = 1;
-    int filerow = E->rowoff + E->cy;
-    erow *row = (filerow >= E->numrows) ? NULL : &E->row[filerow];
-    if (row) {
-        for (j = E->coloff; j < (E->cx + E->coloff); j++) {
-            if (j < row->size && row->chars[j] == TAB) cx += 7 - ((cx) % 8);
-            cx++;
-        }
-    }
-    cx += gutter;
-
-    /* Completion popup near the cursor. */
+    /* Completion popup */
     if (E->lsp.completion.active && E->lsp.completion.nitems > 0) {
         struct lspCompletion *comp = &E->lsp.completion;
         int visible = comp->nitems < LSP_COMPLETION_VISIBLE
-                          ? comp->nitems
-                          : LSP_COMPLETION_VISIBLE;
+                          ? comp->nitems : LSP_COMPLETION_VISIBLE;
         int start = 0;
         int maxw = 20;
-        int i, row_screen, col_screen;
+        int i, pop_row, pop_col;
 
         if (comp->selected >= LSP_COMPLETION_VISIBLE)
             start = comp->selected - LSP_COMPLETION_VISIBLE + 1;
@@ -190,14 +154,19 @@ void editorRefreshScreen(struct editorConfig *E) {
         if (maxw > textcols - 2) maxw = textcols - 2;
         if (maxw < 8) maxw = 8;
 
-        row_screen = E->cy + 2; /* 1-based, prefer below cursor line */
-        if (row_screen + visible > E->screenrows)
-            row_screen = E->cy > 0 ? E->cy : 1; /* draw above */
-        if (row_screen < 1) row_screen = 1;
-        col_screen = cx;
-        if (col_screen + maxw + 2 > E->screencols)
-            col_screen = E->screencols - maxw - 2;
-        if (col_screen < gutter + 1) col_screen = gutter + 1;
+        pop_row = E->cy + 1;
+        if (pop_row + visible > E->screenrows)
+            pop_row = E->cy - visible;
+        if (pop_row < 0) pop_row = 0;
+        pop_col = gutter + E->cx;
+        if (pop_col + maxw + 2 > E->screencols)
+            pop_col = E->screencols - maxw - 2;
+        if (pop_col < gutter) pop_col = gutter;
+
+        /* Shadow */
+        for (i = 0; i < visible; i++)
+            guiFillCellRow(pop_col + 1, pop_row + 1 + i, maxw + 2,
+                            0.0f, 0.0f, 0.0f, 0.35f);
 
         for (i = 0; i < visible; i++) {
             int idx = start + i;
@@ -206,37 +175,43 @@ void editorRefreshScreen(struct editorConfig *E) {
             int n, pad;
             int is_sel = (idx == comp->selected);
 
-            snprintf(buf, sizeof(buf), "\x1b[%d;%dH", row_screen + i, col_screen);
-            abAppend(&ab, buf, (int)strlen(buf));
-            if (is_sel) {
-                /* Bright blue background, bold white text — clear selection.
-                 * Lengths must be exact; a short abAppend truncates the SGR
-                 * sequence and the terminal eats the next character(s). */
-                const char *sel = "\x1b[48;5;33m\x1b[1m\x1b[97m";
-                abAppend(&ab, sel, (int)strlen(sel));
-            } else {
-                const char *nosel = "\x1b[48;5;236m\x1b[37m";
-                abAppend(&ab, nosel, (int)strlen(nosel));
-            }
-            /* Marker so selection is obvious even without color. */
+            if (is_sel)
+                guiFillCellRow(pop_col, pop_row + i, maxw + 2,
+                                0.15f, 0.40f, 0.75f, 1.0f);
+            else
+                guiFillCellRow(pop_col, pop_row + i, maxw + 2,
+                                0.18f, 0.19f, 0.23f, 1.0f);
+
             n = snprintf(item, sizeof(item), "%c %.*s", is_sel ? '>' : ' ', maxw, lab);
-            for (pad = n; pad < maxw + 3 && pad < (int)sizeof(item) - 1; pad++)
+            for (pad = n; pad < maxw + 2 && pad < (int)sizeof(item) - 1; pad++)
                 item[pad] = ' ';
             item[pad] = '\0';
-            abAppend(&ab, item, pad);
-            abAppend(&ab, "\x1b[0m", 4);
+            if (is_sel)
+                guiDrawTextCell(pop_col, pop_row + i, item, pad, 1.0f, 1.0f, 1.0f);
+            else
+                guiDrawTextCell(pop_col, pop_row + i, item, pad, 0.85f, 0.87f, 0.90f);
         }
     }
 
-    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E->cy + 1, cx);
-    abAppend(&ab, buf, strlen(buf));
-    abAppend(&ab, "\x1b[?25h", 6); /* Show cursor. */
-    write(STDOUT_FILENO, ab.b, ab.len);
-    abFree(&ab);
+    /* Block cursor */
+    {
+        int ccol = gutter + E->cx;
+        int crow = E->cy;
+        guiFillCellRow(ccol, crow, 1, 0.85f, 0.88f, 0.95f, 0.85f);
+        /* Redraw char under cursor in dark for contrast */
+        if (cur_filerow < E->numrows) {
+            erow *r = &E->row[cur_filerow];
+            int idx = E->coloff + E->cx;
+            if (idx >= 0 && idx < r->rsize) {
+                char ch = r->render[idx];
+                guiDrawTextCell(ccol, crow, &ch, 1, 0.1f, 0.1f, 0.12f);
+            }
+        }
+    }
+
+    guiEndFrame();
 }
 
-/* Set an editor status message for the second line of the status, at the
- * end of the screen. */
 void editorSetStatusMessage(struct editorConfig *E, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);

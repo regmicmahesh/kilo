@@ -3,6 +3,6 @@
 
 #include "editor.h"
 
-void editorProcessKeypress(struct editorConfig *E, int fd);
+void editorProcessKeypress(struct editorConfig *E);
 
 #endif

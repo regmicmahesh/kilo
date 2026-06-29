@@ -1,68 +1,48 @@
-/* Kilo -- A very simple editor in less than 1-kilo lines of code (as counted
- *         by "cloc"). Does not depend on libcurses, directly emits VT100
- *         escapes on the terminal.
- *
- * -----------------------------------------------------------------------
+/* Kilo GUI — SDL2 + OpenGL port of antirez/kilo with multi-file structure,
+ * undo/redo, find/replace, line numbers, and Node/TS LSP completions.
  *
  * Copyright (C) 2016 Salvatore Sanfilippo <antirez at gmail dot com>
- *
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are
- * met:
- *
- *  *  Redistributions of source code must retain the above copyright
- *     notice, this list of conditions and the following disclaimer.
- *
- *  *  Redistributions in binary form must reproduce the above copyright
- *     notice, this list of conditions and the following disclaimer in the
- *     documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * GUI port modifications under the same BSD license terms.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 
 #include "editor.h"
 #include "fileio.h"
+#include "gui.h"
 #include "input.h"
 #include "lsp.h"
 #include "output.h"
 #include "syntax.h"
-#include "terminal.h"
 
 int main(int argc, char **argv) {
     struct editorConfig E;
 
     if (argc != 2) {
         fprintf(stderr, "Usage: kilo <filename>\n");
-        exit(1);
+        return 1;
+    }
+
+    if (guiInit(1100, 720, "kilo") != 0) {
+        fprintf(stderr, "Failed to initialize GUI (SDL2/OpenGL).\n");
+        return 1;
     }
 
     initEditor(&E);
     editorSelectSyntaxHighlight(&E, argv[1]);
     editorOpen(&E, argv[1]);
-    enableRawMode(&E, STDIN_FILENO);
     lspStart(&E);
     editorSetStatusMessage(&E,
-        "HELP: Ctrl-S save | Ctrl-F find | Ctrl-H replace | Ctrl-Z/Y undo | "
-        "LSP: Ctrl-N/P nav, Tab accept");
-    while (1) {
+        "Ctrl-S save | Ctrl-F find | Ctrl-H replace | Ctrl-Z/Y undo | "
+        "Ctrl-N/P completion | Tab accept | scroll wheel");
+
+    while (!guiPollQuit()) {
         editorRefreshScreen(&E);
-        editorProcessKeypress(&E, STDIN_FILENO);
+        editorProcessKeypress(&E);
     }
+
+    lspStop(&E);
+    guiShutdown();
     return 0;
 }

@@ -3,7 +3,7 @@
 
 #include "editor.h"
 
-void editorFind(struct editorConfig *E, int fd);
-void editorFindReplace(struct editorConfig *E, int fd);
+void editorFind(struct editorConfig *E);
+void editorFindReplace(struct editorConfig *E);
 
 #endif
