@@ -24,7 +24,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (guiInit(1100, 720, "kilo") != 0) {
+    if (guiInit(1400, 900, "kilo") != 0) {
         fprintf(stderr, "Failed to initialize GUI (SDL2/OpenGL).\n");
         return 1;
     }

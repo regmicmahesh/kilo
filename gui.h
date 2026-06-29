@@ -35,6 +35,10 @@ int guiPollKey(void);
 /* Mouse wheel: accumulate and consume as page scroll deltas (lines). */
 int guiConsumeWheelLines(void);
 
+/* Mouse click in cell coordinates (origin top-left of window).
+ * Returns 1 if a click was pending, and writes *col, *row. */
+int guiConsumeClick(int *col, int *row);
+
 /* Set window title (e.g. filename + dirty). */
 void guiSetTitle(const char *title);
 

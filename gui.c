@@ -19,16 +19,17 @@
 #include "gui.h"
 #include "editor.h"
 
-#define FONT_PIXEL_HEIGHT 18.0f
-#define ATLAS_W 512
-#define ATLAS_H 512
+/* Large UI scale for readability on retina / desktop displays. */
+#define FONT_PIXEL_HEIGHT 32.0f
+#define ATLAS_W 1024
+#define ATLAS_H 1024
 #define FIRST_CHAR 32
 #define NUM_CHARS 96 /* 32..127 */
 
 static SDL_Window *window;
 static SDL_GLContext glctx;
-static int win_w = 1100, win_h = 720;
-static int cell_w = 10, cell_h = 20;
+static int win_w = 1280, win_h = 800;
+static int cell_w = 18, cell_h = 36;
 
 static GLuint font_tex = 0;
 static stbtt_bakedchar cdata[NUM_CHARS];
@@ -38,6 +39,8 @@ static int quit_flag;
 static int key_queue[64];
 static int kq_r, kq_w;
 static int wheel_lines;
+static int click_pending;
+static int click_cell_col, click_cell_row;
 
 static void kqPush(int k) {
     int n = (kq_w + 1) % 64;
@@ -76,15 +79,15 @@ static int loadFont(const char *path) {
     free(ttf);
     if (ok <= 0) return -1;
 
-    /* Approximate cell size from 'M' and line height. */
+    /* Generous monospaced cell size for readability. */
     {
         stbtt_aligned_quad q;
         float x = 0, y = 0;
         stbtt_GetBakedQuad(cdata, ATLAS_W, ATLAS_H, 'M' - FIRST_CHAR, &x, &y, &q, 1);
-        cell_w = (int)ceilf(x);
-        if (cell_w < 8) cell_w = 8;
-        cell_h = (int)ceilf(FONT_PIXEL_HEIGHT * 1.25f);
-        if (cell_h < 16) cell_h = 16;
+        cell_w = (int)ceilf(x * 1.05f);
+        if (cell_w < 16) cell_w = 16;
+        cell_h = (int)ceilf(FONT_PIXEL_HEIGHT * 1.35f);
+        if (cell_h < 28) cell_h = 28;
     }
 
     glGenTextures(1, &font_tex);
@@ -159,6 +162,7 @@ int guiInit(int width, int height, const char *title) {
     quit_flag = 0;
     kq_r = kq_w = 0;
     wheel_lines = 0;
+    click_pending = 0;
     SDL_StartTextInput();
     return 0;
 }
@@ -328,6 +332,26 @@ static void handleEvent(const SDL_Event *e) {
     case SDL_MOUSEWHEEL:
         wheel_lines += (e->wheel.y > 0) ? -3 : 3;
         break;
+    case SDL_MOUSEBUTTONDOWN:
+        if (e->button.button == SDL_BUTTON_LEFT) {
+            int ww = 1, wh = 1;
+            float sx, sy;
+            int px, py;
+            SDL_GetWindowSize(window, &ww, &wh);
+            if (ww < 1) ww = 1;
+            if (wh < 1) wh = 1;
+            /* Map window coords → drawable pixels (HiDPI). */
+            sx = (float)win_w / (float)ww;
+            sy = (float)win_h / (float)wh;
+            px = (int)(e->button.x * sx);
+            py = (int)(e->button.y * sy);
+            if (cell_w > 0 && cell_h > 0) {
+                click_cell_col = px / cell_w;
+                click_cell_row = py / cell_h;
+                click_pending = 1;
+            }
+        }
+        break;
     case SDL_TEXTINPUT: {
         const char *t = e->text.text;
         while (*t) {
@@ -360,7 +384,10 @@ int guiPollKey(void) {
 
 int guiWaitKey(void) {
     for (;;) {
-        int k = guiPollKey();
+        int k;
+        pump();
+        if (click_pending) return MOUSE_CLICK;
+        k = kqPop();
         if (k) return k;
         if (quit_flag) return CTRL_Q;
         SDL_Delay(8);
@@ -371,4 +398,12 @@ int guiConsumeWheelLines(void) {
     int w = wheel_lines;
     wheel_lines = 0;
     return w;
+}
+
+int guiConsumeClick(int *col, int *row) {
+    if (!click_pending) return 0;
+    click_pending = 0;
+    if (col) *col = click_cell_col;
+    if (row) *row = click_cell_row;
+    return 1;
 }

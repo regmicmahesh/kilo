@@ -66,7 +66,8 @@ enum KEY_ACTION {
     HOME_KEY,
     END_KEY,
     PAGE_UP,
-    PAGE_DOWN
+    PAGE_DOWN,
+    MOUSE_CLICK = 2000
 };
 
 void initEditor(struct editorConfig *E);

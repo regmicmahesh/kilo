@@ -11,10 +11,87 @@
 
 #define KILO_QUIT_TIMES 3
 
+/* Place cursor from a click in cell coordinates (window grid). */
+static void editorClickGoto(struct editorConfig *E, int cell_col, int cell_row) {
+    int gutter = editorGutterWidth(E);
+    int textcols = editorTextCols(E);
+    int filerow;
+    int filecol;
+    int rowlen;
+
+    /* Ignore clicks on status / message bars. */
+    if (cell_row < 0 || cell_row >= E->screenrows)
+        return;
+
+    filerow = E->rowoff + cell_row;
+    E->cy = cell_row;
+
+    /* Click in gutter → start of line. */
+    if (cell_col <= gutter) {
+        E->cx = 0;
+        E->coloff = 0;
+    } else {
+        int screen_x = cell_col - gutter;
+        if (screen_x >= textcols) screen_x = textcols - 1;
+        if (screen_x < 0) screen_x = 0;
+        filecol = E->coloff + screen_x;
+        if (filerow >= 0 && filerow < E->numrows) {
+            rowlen = E->row[filerow].size;
+            if (filecol > rowlen) filecol = rowlen;
+        } else {
+            filecol = 0;
+        }
+        /* Keep cursor on-screen in the text area. */
+        if (filecol < E->coloff) {
+            E->coloff = filecol;
+            E->cx = 0;
+        } else if (filecol >= E->coloff + textcols) {
+            E->coloff = filecol - textcols + 1;
+            if (E->coloff < 0) E->coloff = 0;
+            E->cx = filecol - E->coloff;
+        } else {
+            E->cx = filecol - E->coloff;
+        }
+    }
+
+    /* If click is past EOF, clamp to last line. */
+    if (E->numrows == 0) {
+        E->cy = 0;
+        E->cx = 0;
+        E->rowoff = 0;
+        E->coloff = 0;
+    } else if (filerow >= E->numrows) {
+        filerow = E->numrows - 1;
+        if (filerow < E->rowoff) {
+            E->rowoff = filerow;
+            E->cy = 0;
+        } else if (filerow >= E->rowoff + E->screenrows) {
+            E->rowoff = filerow - E->screenrows + 1;
+            E->cy = E->screenrows - 1;
+        } else {
+            E->cy = filerow - E->rowoff;
+        }
+        rowlen = E->row[filerow].size;
+        filecol = E->coloff + E->cx;
+        if (filecol > rowlen) {
+            filecol = rowlen;
+            if (filecol < E->coloff) {
+                E->coloff = filecol;
+                E->cx = 0;
+            } else {
+                E->cx = filecol - E->coloff;
+            }
+        }
+    }
+
+    lspClearCompletion(E);
+}
+
 void editorProcessKeypress(struct editorConfig *E) {
     static int quit_times = KILO_QUIT_TIMES;
     int c;
     int wheel;
+    int ccol, crow;
 
     /* Mouse wheel scrolling */
     wheel = guiConsumeWheelLines();
@@ -27,7 +104,19 @@ void editorProcessKeypress(struct editorConfig *E) {
         wheel--;
     }
 
+    while (guiConsumeClick(&ccol, &crow)) {
+        editorClickGoto(E, ccol, crow);
+        quit_times = KILO_QUIT_TIMES;
+        return;
+    }
+
     c = guiWaitKey();
+    if (c == MOUSE_CLICK) {
+        if (guiConsumeClick(&ccol, &crow))
+            editorClickGoto(E, ccol, crow);
+        quit_times = KILO_QUIT_TIMES;
+        return;
+    }
 
     if (E->lsp.completion.active) {
         if (c == CTRL_N || c == ARROW_DOWN) {
