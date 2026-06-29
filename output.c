@@ -207,17 +207,20 @@ void editorRefreshScreen(struct editorConfig *E) {
             int is_sel = (idx == comp->selected);
 
             snprintf(buf, sizeof(buf), "\x1b[%d;%dH", row_screen + i, col_screen);
-            abAppend(&ab, buf, strlen(buf));
+            abAppend(&ab, buf, (int)strlen(buf));
             if (is_sel) {
-                /* Bright blue background, bold white text — clear selection. */
-                abAppend(&ab, "\x1b[48;5;33m\x1b[1m\x1b[97m", 18);
+                /* Bright blue background, bold white text — clear selection.
+                 * Lengths must be exact; a short abAppend truncates the SGR
+                 * sequence and the terminal eats the next character(s). */
+                const char *sel = "\x1b[48;5;33m\x1b[1m\x1b[97m";
+                abAppend(&ab, sel, (int)strlen(sel));
             } else {
-                /* Dim grey background, normal light text. */
-                abAppend(&ab, "\x1b[48;5;236m\x1b[37m", 15);
+                const char *nosel = "\x1b[48;5;236m\x1b[37m";
+                abAppend(&ab, nosel, (int)strlen(nosel));
             }
             /* Marker so selection is obvious even without color. */
-            n = snprintf(item, sizeof(item), "%c%.*s", is_sel ? '>' : ' ', maxw, lab);
-            for (pad = n; pad < maxw + 2 && pad < (int)sizeof(item) - 1; pad++)
+            n = snprintf(item, sizeof(item), "%c %.*s", is_sel ? '>' : ' ', maxw, lab);
+            for (pad = n; pad < maxw + 3 && pad < (int)sizeof(item) - 1; pad++)
                 item[pad] = ' ';
             item[pad] = '\0';
             abAppend(&ab, item, pad);
