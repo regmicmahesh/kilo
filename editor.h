@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include "undo.h"
+#include "lsp.h"
 
 #define KILO_VERSION "0.0.1"
 
@@ -39,6 +40,7 @@ struct editorConfig {
     struct editorSyntax *syntax; /* Current syntax highlight, or NULL. */
     struct termios orig_termios; /* Saved terminal state for restore on exit. */
     struct undoState undo;       /* Undo / redo stacks. */
+    struct lspClient lsp;        /* Language server (Python autocomplete). */
 };
 
 enum KEY_ACTION {
@@ -48,10 +50,11 @@ enum KEY_ACTION {
     CTRL_D = 4,
     CTRL_F = 6,
     CTRL_H = 8,         /* Find and replace */
-
-    TAB = 9,
+    TAB = 9,            /* Also accept completion when menu open (Ctrl+Tab) */
     CTRL_L = 12,
     ENTER = 13,
+    CTRL_N = 14,        /* Next completion */
+    CTRL_P = 16,        /* Previous completion */
     CTRL_Q = 17,
     CTRL_S = 19,
     CTRL_U = 21,

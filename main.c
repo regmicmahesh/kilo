@@ -39,6 +39,7 @@
 #include "editor.h"
 #include "fileio.h"
 #include "input.h"
+#include "lsp.h"
 #include "output.h"
 #include "syntax.h"
 #include "terminal.h"
@@ -55,8 +56,10 @@ int main(int argc, char **argv) {
     editorSelectSyntaxHighlight(&E, argv[1]);
     editorOpen(&E, argv[1]);
     enableRawMode(&E, STDIN_FILENO);
+    lspStartPython(&E);
     editorSetStatusMessage(&E,
-        "HELP: Ctrl-S save | Ctrl-Q quit | Ctrl-F find | Ctrl-H replace | Ctrl-Z/Y undo/redo");
+        "HELP: Ctrl-S save | Ctrl-F find | Ctrl-H replace | Ctrl-Z/Y undo | "
+        "LSP: Ctrl-N/P nav, Tab accept");
     while (1) {
         editorRefreshScreen(&E);
         editorProcessKeypress(&E, STDIN_FILENO);

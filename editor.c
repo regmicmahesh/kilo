@@ -69,6 +69,7 @@ void initEditor(struct editorConfig *E) {
     E->statusmsg[0] = '\0';
     E->statusmsg_time = 0;
     undoInit(&E->undo);
+    lspInit(&E->lsp);
     sigwinch_editor = E;
     updateWindowSize(E);
     signal(SIGWINCH, handleSigWinCh);

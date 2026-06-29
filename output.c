@@ -7,6 +7,7 @@
 #include "output.h"
 #include "buffer.h"
 #include "syntax.h"
+#include "lsp.h"
 
 /* This function writes the whole screen using VT100 escape characters
  * starting from the logical state of the editor. */
@@ -169,6 +170,56 @@ void editorRefreshScreen(struct editorConfig *E) {
         }
     }
     cx += gutter;
+
+    /* Completion popup near the cursor. */
+    if (E->lsp.completion.active && E->lsp.completion.nitems > 0) {
+        struct lspCompletion *comp = &E->lsp.completion;
+        int visible = comp->nitems < LSP_COMPLETION_VISIBLE
+                          ? comp->nitems
+                          : LSP_COMPLETION_VISIBLE;
+        int start = 0;
+        int maxw = 20;
+        int i, row_screen, col_screen;
+
+        if (comp->selected >= LSP_COMPLETION_VISIBLE)
+            start = comp->selected - LSP_COMPLETION_VISIBLE + 1;
+        for (i = 0; i < comp->nitems; i++) {
+            int w = (int)strlen(comp->items[i].label);
+            if (w > maxw) maxw = w;
+        }
+        if (maxw > textcols - 2) maxw = textcols - 2;
+        if (maxw < 8) maxw = 8;
+
+        row_screen = E->cy + 2; /* 1-based, prefer below cursor line */
+        if (row_screen + visible > E->screenrows)
+            row_screen = E->cy > 0 ? E->cy : 1; /* draw above */
+        if (row_screen < 1) row_screen = 1;
+        col_screen = cx;
+        if (col_screen + maxw + 2 > E->screencols)
+            col_screen = E->screencols - maxw - 2;
+        if (col_screen < gutter + 1) col_screen = gutter + 1;
+
+        for (i = 0; i < visible; i++) {
+            int idx = start + i;
+            const char *lab = comp->items[idx].label;
+            char item[256];
+            int n, pad;
+
+            snprintf(buf, sizeof(buf), "\x1b[%d;%dH", row_screen + i, col_screen);
+            abAppend(&ab, buf, strlen(buf));
+            if (idx == comp->selected)
+                abAppend(&ab, "\x1b[7m", 4);
+            else
+                abAppend(&ab, "\x1b[47m\x1b[30m", 10);
+            n = snprintf(item, sizeof(item), " %.*s", maxw, lab);
+            for (pad = n; pad < maxw + 2 && pad < (int)sizeof(item) - 1; pad++)
+                item[pad] = ' ';
+            item[pad] = '\0';
+            abAppend(&ab, item, pad);
+            abAppend(&ab, "\x1b[0m", 4);
+        }
+    }
+
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E->cy + 1, cx);
     abAppend(&ab, buf, strlen(buf));
     abAppend(&ab, "\x1b[?25h", 6); /* Show cursor. */
