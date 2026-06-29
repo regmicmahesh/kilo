@@ -43,10 +43,12 @@ struct editorConfig {
 
 enum KEY_ACTION {
     KEY_NULL = 0,
+    CTRL_A = 1,         /* Replace all (in find/replace mode) */
     CTRL_C = 3,
     CTRL_D = 4,
     CTRL_F = 6,
-    CTRL_H = 8,
+    CTRL_H = 8,         /* Find and replace */
+
     TAB = 9,
     CTRL_L = 12,
     ENTER = 13,

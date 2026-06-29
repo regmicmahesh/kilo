@@ -48,8 +48,10 @@ void editorProcessKeypress(struct editorConfig *E, int fd) {
     case CTRL_F:
         editorFind(E, fd);
         break;
+    case CTRL_H:        /* Ctrl-h: find and replace */
+        editorFindReplace(E, fd);
+        break;
     case BACKSPACE:     /* Backspace */
-    case CTRL_H:        /* Ctrl-h */
     case DEL_KEY:
         editorDelChar(E);
         break;

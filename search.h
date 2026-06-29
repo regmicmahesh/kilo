@@ -4,5 +4,6 @@
 #include "editor.h"
 
 void editorFind(struct editorConfig *E, int fd);
+void editorFindReplace(struct editorConfig *E, int fd);
 
 #endif
