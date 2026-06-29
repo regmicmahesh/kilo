@@ -84,8 +84,8 @@ static void gotoMatch(struct editorConfig *E, const struct searchMatch *m) {
     E->cx = rcol;
     E->rowoff = m->row;
     E->coloff = 0;
-    if (E->cx > E->screencols) {
-        int diff = E->cx - E->screencols;
+    if (E->cx > editorTextCols(E)) {
+        int diff = E->cx - editorTextCols(E);
         E->cx -= diff;
         E->coloff += diff;
     }

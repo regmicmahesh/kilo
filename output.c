@@ -13,38 +13,75 @@
 void editorRefreshScreen(struct editorConfig *E) {
     int y;
     erow *r;
-    char buf[32];
+    char buf[64];
     struct abuf ab = ABUF_INIT;
+    int gutter = editorGutterWidth(E);
+    int textcols = editorTextCols(E);
+    int cur_filerow = E->rowoff + E->cy;
 
     abAppend(&ab, "\x1b[?25l", 6); /* Hide cursor. */
     abAppend(&ab, "\x1b[H", 3); /* Go home. */
     for (y = 0; y < E->screenrows; y++) {
         int filerow = E->rowoff + y;
+        int is_current = (filerow == cur_filerow);
+        char gutterbuf[32];
+        int gwritten;
 
         if (filerow >= E->numrows) {
+            /* Empty gutter + tilde for lines past EOF. */
+            snprintf(gutterbuf, sizeof(gutterbuf), "%*s", gutter, "");
+            abAppend(&ab, "\x1b[90m", 5); /* bright black / grey */
+            abAppend(&ab, gutterbuf, gutter);
+            abAppend(&ab, "\x1b[39m", 5);
             if (E->numrows == 0 && y == E->screenrows / 3) {
                 char welcome[80];
                 int welcomelen = snprintf(welcome, sizeof(welcome),
-                    "Kilo editor -- verison %s\x1b[0K\r\n", KILO_VERSION);
-                int padding = (E->screencols - welcomelen) / 2;
+                    "Kilo editor -- verison %s", KILO_VERSION);
+                int padding = (textcols - welcomelen) / 2;
+                if (padding < 0) padding = 0;
                 if (padding) {
                     abAppend(&ab, "~", 1);
                     padding--;
                 }
                 while (padding--) abAppend(&ab, " ", 1);
+                if (welcomelen > textcols) welcomelen = textcols;
                 abAppend(&ab, welcome, welcomelen);
+                abAppend(&ab, "\x1b[0K\r\n", 6);
             } else {
                 abAppend(&ab, "~\x1b[0K\r\n", 7);
             }
             continue;
         }
 
+        /* Line number gutter (right-aligned), highlighted on current line. */
+        gwritten = snprintf(gutterbuf, sizeof(gutterbuf), "%*d ",
+                            gutter - 1, filerow + 1);
+        if (gwritten > gutter) gwritten = gutter;
+        if (is_current) {
+            /* Reverse video + bold for the current line number. */
+            abAppend(&ab, "\x1b[7m\x1b[1m", 8);
+            abAppend(&ab, gutterbuf, gwritten);
+            abAppend(&ab, "\x1b[0m", 4);
+        } else {
+            abAppend(&ab, "\x1b[90m", 5);
+            abAppend(&ab, gutterbuf, gwritten);
+            abAppend(&ab, "\x1b[39m", 5);
+        }
+
         r = &E->row[filerow];
+
+        /* Current line body: subtle reverse dim background via 7m on spaces
+         * is too strong; use a soft inverted row prefix instead — apply
+         * reverse only when drawing, with normal syntax colors preferred.
+         * We use a dark background when the terminal supports it; fall back
+         * to bold text for the whole current line when drawing HL_NORMAL. */
+        if (is_current)
+            abAppend(&ab, "\x1b[48;5;236m", 11); /* grey background */
 
         int len = r->rsize - E->coloff;
         int current_color = -1;
         if (len > 0) {
-            if (len > E->screencols) len = E->screencols;
+            if (len > textcols) len = textcols;
             char *c = r->render + E->coloff;
             unsigned char *hl = r->hl + E->coloff;
             int j;
@@ -58,6 +95,9 @@ void editorRefreshScreen(struct editorConfig *E) {
                         sym = '?';
                     abAppend(&ab, &sym, 1);
                     abAppend(&ab, "\x1b[0m", 4);
+                    if (is_current)
+                        abAppend(&ab, "\x1b[48;5;236m", 11);
+                    current_color = -1;
                 } else if (hl[j] == HL_NORMAL) {
                     if (current_color != -1) {
                         abAppend(&ab, "\x1b[39m", 5);
@@ -67,15 +107,24 @@ void editorRefreshScreen(struct editorConfig *E) {
                 } else {
                     int color = editorSyntaxToColor(hl[j]);
                     if (color != current_color) {
-                        char buf[16];
-                        int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", color);
+                        char cbuf[16];
+                        int clen = snprintf(cbuf, sizeof(cbuf), "\x1b[%dm", color);
                         current_color = color;
-                        abAppend(&ab, buf, clen);
+                        abAppend(&ab, cbuf, clen);
                     }
                     abAppend(&ab, c + j, 1);
                 }
             }
         }
+
+        /* Extend current-line background to the end of the text area. */
+        if (is_current) {
+            int pad = textcols - (len > 0 ? len : 0);
+            if (pad < 0) pad = 0;
+            while (pad--) abAppend(&ab, " ", 1);
+            abAppend(&ab, "\x1b[49m", 5); /* reset background */
+        }
+
         abAppend(&ab, "\x1b[39m", 5);
         abAppend(&ab, "\x1b[0K", 4);
         abAppend(&ab, "\r\n", 2);
@@ -108,9 +157,7 @@ void editorRefreshScreen(struct editorConfig *E) {
     if (msglen && time(NULL) - E->statusmsg_time < 5)
         abAppend(&ab, E->statusmsg, msglen <= E->screencols ? msglen : E->screencols);
 
-    /* Put cursor at its current position. Note that the horizontal position
-     * at which the cursor is displayed may be different compared to 'E->cx'
-     * because of TABs. */
+    /* Cursor in text area (1-based), shifted right by the gutter. */
     int j;
     int cx = 1;
     int filerow = E->rowoff + E->cy;
@@ -121,6 +168,7 @@ void editorRefreshScreen(struct editorConfig *E) {
             cx++;
         }
     }
+    cx += gutter;
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E->cy + 1, cx);
     abAppend(&ab, buf, strlen(buf));
     abAppend(&ab, "\x1b[?25h", 6); /* Show cursor. */

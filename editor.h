@@ -73,6 +73,10 @@ enum KEY_ACTION {
 void initEditor(struct editorConfig *E);
 void updateWindowSize(struct editorConfig *E);
 
+/* Line-number gutter width (digits + padding) and text-area columns. */
+int editorGutterWidth(const struct editorConfig *E);
+int editorTextCols(const struct editorConfig *E);
+
 void editorUpdateRow(struct editorConfig *E, erow *row);
 void editorInsertRow(struct editorConfig *E, int at, char *s, size_t len);
 void editorFreeRow(erow *row);

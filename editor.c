@@ -29,12 +29,29 @@ void updateWindowSize(struct editorConfig *E) {
     E->screenrows -= 2; /* Get room for status bar. */
 }
 
+/* Digits needed for the largest line number, plus one padding column. */
+int editorGutterWidth(const struct editorConfig *E) {
+    int lines = E->numrows > 0 ? E->numrows : 1;
+    int digits = 1;
+    while (lines >= 10) {
+        digits++;
+        lines /= 10;
+    }
+    return digits + 1; /* trailing space between gutter and text */
+}
+
+int editorTextCols(const struct editorConfig *E) {
+    int g = editorGutterWidth(E);
+    int cols = E->screencols - g;
+    return cols > 1 ? cols : 1;
+}
+
 static void handleSigWinCh(int unused __attribute__((unused))) {
     struct editorConfig *E = sigwinch_editor;
     if (!E) return;
     updateWindowSize(E);
     if (E->cy > E->screenrows) E->cy = E->screenrows - 1;
-    if (E->cx > E->screencols) E->cx = E->screencols - 1;
+    if (E->cx > editorTextCols(E)) E->cx = editorTextCols(E) - 1;
     editorRefreshScreen(E);
 }
 
@@ -242,7 +259,7 @@ void editorInsertChar(struct editorConfig *E, int c) {
     }
 
     editorRowInsertChar(E, row, filecol, c);
-    if (E->cx == E->screencols - 1)
+    if (E->cx == editorTextCols(E) - 1)
         E->coloff++;
     else
         E->cx++;
@@ -252,12 +269,36 @@ void editorInsertChar(struct editorConfig *E, int c) {
         undoEndGroup(E);
 }
 
+/* Leading spaces/tabs on a row (for auto-indent on Enter). */
+static int editorLeadingIndentLen(erow *row) {
+    int i = 0;
+    if (!row) return 0;
+    while (i < row->size && (row->chars[i] == ' ' || row->chars[i] == '\t'))
+        i++;
+    return i;
+}
+
 /* Inserting a newline is slightly complex as we have to handle inserting a
- * newline in the middle of a line, splitting the line as needed. */
+ * newline in the middle of a line, splitting the line as needed.
+ * The new line inherits leading whitespace from the line Enter was pressed on. */
 void editorInsertNewline(struct editorConfig *E) {
     int filerow = E->rowoff + E->cy;
     int filecol = E->coloff + E->cx;
     erow *row = (filerow >= E->numrows) ? NULL : &E->row[filerow];
+    char *indent = NULL;
+    int indent_len = 0;
+    int new_row;
+
+    if (row) {
+        indent_len = editorLeadingIndentLen(row);
+        if (indent_len > 0) {
+            indent = malloc(indent_len);
+            if (indent)
+                memcpy(indent, row->chars, indent_len);
+            else
+                indent_len = 0;
+        }
+    }
 
     if (!row) {
         if (filerow == E->numrows) {
@@ -266,8 +307,10 @@ void editorInsertNewline(struct editorConfig *E) {
                 undoPushAtom(E, U_SPLIT_LINE, filerow, 0, NULL, 0);
             }
             editorInsertRow(E, filerow, "", 0);
+            new_row = filerow;
             goto fixcursor;
         }
+        free(indent);
         return;
     }
     /* If the cursor is over the current line size, we want to conceptually
@@ -279,6 +322,7 @@ void editorInsertNewline(struct editorConfig *E) {
     }
     if (filecol == 0) {
         editorInsertRow(E, filerow, "", 0);
+        new_row = filerow;
     } else {
         /* We are in the middle of a line. Split it between two rows. */
         editorInsertRow(E, filerow + 1, row->chars + filecol, row->size - filecol);
@@ -286,6 +330,7 @@ void editorInsertNewline(struct editorConfig *E) {
         row->chars[filecol] = '\0';
         row->size = filecol;
         editorUpdateRow(E, row);
+        new_row = filerow + 1;
     }
 fixcursor:
     if (E->cy == E->screenrows - 1) {
@@ -295,6 +340,55 @@ fixcursor:
     }
     E->cx = 0;
     E->coloff = 0;
+
+    /* Apply inherited leading whitespace on the new line (skip during
+     * undo/redo or other suspended recording, e.g. paste). */
+    if (!E->undo.suspend && indent_len > 0 && indent && new_row < E->numrows) {
+        erow *nrow = &E->row[new_row];
+        /* Avoid doubling indent when the split already kept leading spaces. */
+        int existing = editorLeadingIndentLen(nrow);
+        int need = indent_len;
+        if (existing >= indent_len) {
+            need = 0;
+        } else if (existing > 0 &&
+                   existing <= indent_len &&
+                   memcmp(nrow->chars, indent, existing) == 0) {
+            need = indent_len - existing;
+        }
+        if (need > 0) {
+            const char *ins = indent + (indent_len - need);
+            if (!E->undo.suspend)
+                undoPushAtom(E, U_INSERT_TEXT, new_row, 0, ins, (size_t)need);
+            {
+                int prev = E->undo.suspend;
+                E->undo.suspend = 1;
+                undoApplyInsertText(E, new_row, 0, ins, (size_t)need);
+                E->undo.suspend = prev;
+            }
+        }
+        /* Place cursor after inherited indent. */
+        {
+            int i, rcol = 0;
+            nrow = &E->row[new_row];
+            for (i = 0; i < indent_len && i < nrow->size; i++) {
+                if (nrow->chars[i] == '\t') {
+                    rcol++;
+                    while ((rcol + 1) % 8 != 0) rcol++;
+                } else {
+                    rcol++;
+                }
+            }
+            E->cx = rcol;
+            E->coloff = 0;
+            if (E->cx >= editorTextCols(E)) {
+                int shift = E->cx - editorTextCols(E) + 1;
+                E->cx -= shift;
+                E->coloff += shift;
+            }
+        }
+    }
+
+    free(indent);
     if (!E->undo.suspend)
         undoEndGroup(E);
 }
@@ -324,8 +418,8 @@ void editorDelChar(struct editorConfig *E) {
         else
             E->cy--;
         E->cx = filecol;
-        if (E->cx >= E->screencols) {
-            int shift = (E->screencols - E->cx) + 1;
+        if (E->cx >= editorTextCols(E)) {
+            int shift = (editorTextCols(E) - E->cx) + 1;
             E->cx -= shift;
             E->coloff += shift;
         }
@@ -370,9 +464,9 @@ void editorMoveCursor(struct editorConfig *E, int key) {
                 if (filerow > 0) {
                     E->cy--;
                     E->cx = E->row[filerow - 1].size;
-                    if (E->cx > E->screencols - 1) {
-                        E->coloff = E->cx - E->screencols + 1;
-                        E->cx = E->screencols - 1;
+                    if (E->cx > editorTextCols(E) - 1) {
+                        E->coloff = E->cx - editorTextCols(E) + 1;
+                        E->cx = editorTextCols(E) - 1;
                     }
                 }
             }
@@ -382,7 +476,7 @@ void editorMoveCursor(struct editorConfig *E, int key) {
         break;
     case ARROW_RIGHT:
         if (row && filecol < row->size) {
-            if (E->cx == E->screencols - 1) {
+            if (E->cx == editorTextCols(E) - 1) {
                 E->coloff++;
             } else {
                 E->cx += 1;
@@ -505,7 +599,7 @@ void editorUndoableInsertText(struct editorConfig *E, const char *s, size_t len)
             {
                 int n = (int)(i - start);
                 while (n--) {
-                    if (E->cx == E->screencols - 1)
+                    if (E->cx == editorTextCols(E) - 1)
                         E->coloff++;
                     else
                         E->cx++;
