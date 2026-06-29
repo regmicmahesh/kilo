@@ -676,6 +676,53 @@ static void parseCompletionResult(struct lspCompletion *comp, const char *json) 
     }
 }
 
+/* Keep only items whose label or insertText starts with the typed prefix
+ * (e.g. document.al → only alert, ... not every Math member). */
+static int itemMatchesPrefix(const struct lspCompletionItem *it,
+                             const char *prefix, size_t plen) {
+    const char *cands[2];
+    int i;
+
+    if (plen == 0) return 1;
+    cands[0] = it->label;
+    cands[1] = it->insertText;
+    for (i = 0; i < 2; i++) {
+        if (!cands[i]) continue;
+        if (strncmp(cands[i], prefix, plen) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+static void filterCompletionByPrefix(struct lspCompletion *comp,
+                                     const char *prefix, size_t plen) {
+    int r, w;
+
+    if (!comp || plen == 0) return;
+    w = 0;
+    for (r = 0; r < comp->nitems; r++) {
+        if (itemMatchesPrefix(&comp->items[r], prefix, plen)) {
+            if (w != r)
+                comp->items[w] = comp->items[r];
+            w++;
+        } else {
+            free(comp->items[r].label);
+            free(comp->items[r].insertText);
+            comp->items[r].label = NULL;
+            comp->items[r].insertText = NULL;
+        }
+    }
+    for (r = w; r < comp->nitems; r++) {
+        comp->items[r].label = NULL;
+        comp->items[r].insertText = NULL;
+    }
+    comp->nitems = w;
+    if (comp->selected >= comp->nitems)
+        comp->selected = 0;
+    if (comp->nitems == 0)
+        freeCompletionItems(comp);
+}
+
 static int isIdentChar(int c) {
     return isalnum((unsigned char)c) || c == '_' || c == '$';
 }
@@ -732,6 +779,26 @@ int lspRequestCompletion(struct editorConfig *E) {
 
     E->lsp.completion.start_row = filerow;
     E->lsp.completion.start_col = completionStartCol(E, filerow, filecol);
+
+    /* Filter to prefix typed so far (chars from word start to cursor). */
+    if (filerow >= 0 && filerow < E->numrows) {
+        erow *row = &E->row[filerow];
+        int sc = E->lsp.completion.start_col;
+        int ec = filecol;
+        if (sc < 0) sc = 0;
+        if (ec > row->size) ec = row->size;
+        if (ec > sc && row->chars) {
+            size_t plen = (size_t)(ec - sc);
+            char *prefix = malloc(plen + 1);
+            if (prefix) {
+                memcpy(prefix, row->chars + sc, plen);
+                prefix[plen] = '\0';
+                filterCompletionByPrefix(&E->lsp.completion, prefix, plen);
+                free(prefix);
+            }
+        }
+    }
+
     if (E->lsp.completion.nitems == 0)
         lspClearCompletion(E);
     return E->lsp.completion.active ? 0 : -1;
