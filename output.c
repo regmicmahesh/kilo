@@ -201,17 +201,22 @@ void editorRefreshScreen(struct editorConfig *E) {
 
         for (i = 0; i < visible; i++) {
             int idx = start + i;
-            const char *lab = comp->items[idx].label;
+            const char *lab = comp->items[idx].label ? comp->items[idx].label : "";
             char item[256];
             int n, pad;
+            int is_sel = (idx == comp->selected);
 
             snprintf(buf, sizeof(buf), "\x1b[%d;%dH", row_screen + i, col_screen);
             abAppend(&ab, buf, strlen(buf));
-            if (idx == comp->selected)
-                abAppend(&ab, "\x1b[7m", 4);
-            else
-                abAppend(&ab, "\x1b[47m\x1b[30m", 10);
-            n = snprintf(item, sizeof(item), " %.*s", maxw, lab);
+            if (is_sel) {
+                /* Bright blue background, bold white text — clear selection. */
+                abAppend(&ab, "\x1b[48;5;33m\x1b[1m\x1b[97m", 18);
+            } else {
+                /* Dim grey background, normal light text. */
+                abAppend(&ab, "\x1b[48;5;236m\x1b[37m", 15);
+            }
+            /* Marker so selection is obvious even without color. */
+            n = snprintf(item, sizeof(item), "%c%.*s", is_sel ? '>' : ' ', maxw, lab);
             for (pad = n; pad < maxw + 2 && pad < (int)sizeof(item) - 1; pad++)
                 item[pad] = ' ';
             item[pad] = '\0';
