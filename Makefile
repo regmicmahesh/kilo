@@ -1,7 +1,18 @@
-all: kilo
+CC ?= cc
+CFLAGS = -Wall -W -pedantic -std=c99
+SRCS = main.c editor.c terminal.c buffer.c input.c output.c search.c syntax.c fileio.c
+OBJS = $(SRCS:.c=.o)
+TARGET = kilo
 
-kilo: kilo.c
-	$(CC) -o kilo kilo.c -Wall -W -pedantic -std=c99
+all: $(TARGET)
+
+$(TARGET): $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $(OBJS)
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm kilo
+	rm -f $(TARGET) $(OBJS)
+
+.PHONY: all clean
