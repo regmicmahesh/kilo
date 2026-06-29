@@ -1,4 +1,6 @@
 #include <stdlib.h>
+#include <string.h>
+#include <SDL.h>
 
 #include "input.h"
 #include "editor.h"
@@ -88,6 +90,89 @@ static void editorClickGoto(struct editorConfig *E, int cell_col, int cell_row) 
     lspClearCompletion(E);
 }
 
+static void editorCopyToClipboard(struct editorConfig *E) {
+    char *text = editorGetSelectedText(E);
+    if (!text) {
+        editorSetStatusMessage(E, "Nothing selected to copy");
+        return;
+    }
+    if (SDL_SetClipboardText(text) != 0)
+        editorSetStatusMessage(E, "Clipboard error: %s", SDL_GetError());
+    else
+        editorSetStatusMessage(E, "Copied");
+    free(text);
+}
+
+static void editorCutToClipboard(struct editorConfig *E) {
+    char *text = editorGetSelectedText(E);
+    if (!text) {
+        editorSetStatusMessage(E, "Nothing selected to cut");
+        return;
+    }
+    if (SDL_SetClipboardText(text) != 0)
+        editorSetStatusMessage(E, "Clipboard error: %s", SDL_GetError());
+    free(text);
+    editorDeleteSelection(E);
+    if (E->lsp.enabled) lspDidChange(E);
+    editorSetStatusMessage(E, "Cut");
+}
+
+static void editorPasteFromClipboard(struct editorConfig *E) {
+    char *text;
+    if (!SDL_HasClipboardText()) {
+        editorSetStatusMessage(E, "Clipboard empty");
+        return;
+    }
+    text = SDL_GetClipboardText();
+    if (!text) {
+        editorSetStatusMessage(E, "Clipboard error: %s", SDL_GetError());
+        return;
+    }
+    if (E->sel_active)
+        editorDeleteSelection(E);
+    editorUndoableInsertText(E, text, strlen(text));
+    SDL_free(text);
+    if (E->lsp.enabled) lspDidChange(E);
+    editorSetStatusMessage(E, "Pasted");
+}
+
+static void editorRunContextAction(struct editorConfig *E, int act) {
+    switch (act) {
+    case CTX_UNDO:
+        editorClearSelection(E);
+        editorUndo(E);
+        if (E->lsp.enabled) lspDidChange(E);
+        break;
+    case CTX_REDO:
+        editorClearSelection(E);
+        editorRedo(E);
+        if (E->lsp.enabled) lspDidChange(E);
+        break;
+    case CTX_CUT:
+        editorCutToClipboard(E);
+        break;
+    case CTX_COPY:
+        editorCopyToClipboard(E);
+        break;
+    case CTX_PASTE:
+        editorPasteFromClipboard(E);
+        break;
+    case CTX_SELECT_ALL:
+        editorSelectAll(E);
+        editorSetStatusMessage(E, "Selected all (%d lines)", E->numrows);
+        break;
+    case CTX_SAVE:
+        editorSave(E);
+        break;
+    case CTX_FIND:
+        editorClearSelection(E);
+        editorFind(E);
+        break;
+    default:
+        break;
+    }
+}
+
 void editorProcessKeypress(struct editorConfig *E) {
     static int quit_times = KILO_QUIT_TIMES;
     int c;
@@ -105,19 +190,57 @@ void editorProcessKeypress(struct editorConfig *E) {
         wheel--;
     }
 
+    while (guiConsumeRightClick(&ccol, &crow)) {
+        /* Move caret under cursor, then open menu (keep selection if any). */
+        if (!E->sel_active)
+            editorClickGoto(E, ccol, crow);
+        lspClearCompletion(E);
+        editorOpenContextMenu(E, ccol, crow);
+        quit_times = KILO_QUIT_TIMES;
+        return;
+    }
+
     while (guiConsumeClick(&ccol, &crow)) {
+        if (E->ctx_menu.active) {
+            int act = editorContextMenuClick(E, ccol, crow);
+            if (act != CTX_NONE)
+                editorRunContextAction(E, act);
+            quit_times = KILO_QUIT_TIMES;
+            return;
+        }
         editorClickGoto(E, ccol, crow);
         quit_times = KILO_QUIT_TIMES;
         return;
     }
 
     c = guiWaitKey();
-    if (c == MOUSE_CLICK) {
-        if (guiConsumeClick(&ccol, &crow))
-            editorClickGoto(E, ccol, crow);
+    if (c == MOUSE_RIGHT_CLICK) {
+        if (guiConsumeRightClick(&ccol, &crow)) {
+            if (!E->sel_active)
+                editorClickGoto(E, ccol, crow);
+            lspClearCompletion(E);
+            editorOpenContextMenu(E, ccol, crow);
+        }
         quit_times = KILO_QUIT_TIMES;
         return;
     }
+    if (c == MOUSE_CLICK) {
+        if (guiConsumeClick(&ccol, &crow)) {
+            if (E->ctx_menu.active) {
+                int act = editorContextMenuClick(E, ccol, crow);
+                if (act != CTX_NONE)
+                    editorRunContextAction(E, act);
+            } else {
+                editorClickGoto(E, ccol, crow);
+            }
+        }
+        quit_times = KILO_QUIT_TIMES;
+        return;
+    }
+
+    /* Any key dismisses the context menu. */
+    if (E->ctx_menu.active && c != KEY_NULL)
+        editorCloseContextMenu(E);
 
     if (E->lsp.completion.active) {
         if (c == CTRL_N || c == ARROW_DOWN) {
@@ -157,6 +280,7 @@ void editorProcessKeypress(struct editorConfig *E) {
         if (E->lsp.enabled) lspDidChange(E);
         break;
     case CTRL_C:
+        editorCopyToClipboard(E);
         break;
     case CTRL_Q:
         if (E->dirty && quit_times) {

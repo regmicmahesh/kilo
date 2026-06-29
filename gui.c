@@ -41,6 +41,8 @@ static int kq_r, kq_w;
 static int wheel_lines;
 static int click_pending;
 static int click_cell_col, click_cell_row;
+static int rclick_pending;
+static int rclick_cell_col, rclick_cell_row;
 
 static void kqPush(int k) {
     int n = (kq_w + 1) % 64;
@@ -163,6 +165,7 @@ int guiInit(int width, int height, const char *title) {
     kq_r = kq_w = 0;
     wheel_lines = 0;
     click_pending = 0;
+    rclick_pending = 0;
     SDL_StartTextInput();
     return 0;
 }
@@ -333,7 +336,8 @@ static void handleEvent(const SDL_Event *e) {
         wheel_lines += (e->wheel.y > 0) ? -3 : 3;
         break;
     case SDL_MOUSEBUTTONDOWN:
-        if (e->button.button == SDL_BUTTON_LEFT) {
+        if (e->button.button == SDL_BUTTON_LEFT ||
+            e->button.button == SDL_BUTTON_RIGHT) {
             int ww = 1, wh = 1;
             float sx, sy;
             int px, py;
@@ -346,11 +350,22 @@ static void handleEvent(const SDL_Event *e) {
             px = (int)(e->button.x * sx);
             py = (int)(e->button.y * sy);
             if (cell_w > 0 && cell_h > 0) {
-                click_cell_col = px / cell_w;
-                click_cell_row = py / cell_h;
-                click_pending = 1;
+                int cc = px / cell_w;
+                int cr = py / cell_h;
+                if (e->button.button == SDL_BUTTON_LEFT) {
+                    click_cell_col = cc;
+                    click_cell_row = cr;
+                    click_pending = 1;
+                } else {
+                    rclick_cell_col = cc;
+                    rclick_cell_row = cr;
+                    rclick_pending = 1;
+                }
             }
         }
+        break;
+    case SDL_MOUSEMOTION:
+        /* hover updates handled in input when menu is open */
         break;
     case SDL_TEXTINPUT: {
         const char *t = e->text.text;
@@ -387,6 +402,7 @@ int guiWaitKey(void) {
         int k;
         pump();
         if (click_pending) return MOUSE_CLICK;
+        if (rclick_pending) return MOUSE_RIGHT_CLICK;
         k = kqPop();
         if (k) return k;
         if (quit_flag) return CTRL_Q;
@@ -405,5 +421,13 @@ int guiConsumeClick(int *col, int *row) {
     click_pending = 0;
     if (col) *col = click_cell_col;
     if (row) *row = click_cell_row;
+    return 1;
+}
+
+int guiConsumeRightClick(int *col, int *row) {
+    if (!rclick_pending) return 0;
+    rclick_pending = 0;
+    if (col) *col = rclick_cell_col;
+    if (row) *row = rclick_cell_row;
     return 1;
 }

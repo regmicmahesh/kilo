@@ -47,6 +47,8 @@ void initEditor(struct editorConfig *E) {
     E->sel_active = 0;
     E->sel_anchor_row = E->sel_anchor_col = 0;
     E->sel_caret_row = E->sel_caret_col = 0;
+    memset(&E->ctx_menu, 0, sizeof(E->ctx_menu));
+    E->ctx_menu.hover = -1;
     undoInit(&E->undo);
     lspInit(&E->lsp);
     updateWindowSize(E);
@@ -528,6 +530,216 @@ int editorPosSelected(const struct editorConfig *E, int row, int col) {
     if (row == sr) return col >= sc;
     if (row == er) return col < ec;
     return 1; /* full middle lines */
+}
+
+const char *contextMenuLabels[] = {
+    "Undo",
+    "Redo",
+    "Cut",
+    "Copy",
+    "Paste",
+    "Select All",
+    "Save",
+    "Find..."
+};
+const int contextMenuActions[] = {
+    CTX_UNDO, CTX_REDO, CTX_CUT, CTX_COPY,
+    CTX_PASTE, CTX_SELECT_ALL, CTX_SAVE, CTX_FIND
+};
+const int contextMenuItemCount = 8;
+
+void editorOpenContextMenu(struct editorConfig *E, int cell_col, int cell_row) {
+    E->ctx_menu.active = 1;
+    E->ctx_menu.col = cell_col;
+    E->ctx_menu.row = cell_row;
+    E->ctx_menu.hover = 0;
+    E->ctx_menu.nitems = contextMenuItemCount;
+    /* Keep menu on screen. */
+    if (E->ctx_menu.row + E->ctx_menu.nitems >= E->screenrows + 2)
+        E->ctx_menu.row = E->screenrows + 2 - E->ctx_menu.nitems;
+    if (E->ctx_menu.row < 0) E->ctx_menu.row = 0;
+    if (E->ctx_menu.col + 16 > E->screencols)
+        E->ctx_menu.col = E->screencols - 16;
+    if (E->ctx_menu.col < 0) E->ctx_menu.col = 0;
+}
+
+void editorCloseContextMenu(struct editorConfig *E) {
+    E->ctx_menu.active = 0;
+    E->ctx_menu.hover = -1;
+}
+
+int editorContextMenuClick(struct editorConfig *E, int cell_col, int cell_row) {
+    int i;
+    int width = 16;
+    if (!E->ctx_menu.active) return CTX_NONE;
+    for (i = 0; i < E->ctx_menu.nitems; i++) {
+        int r = E->ctx_menu.row + i;
+        int c0 = E->ctx_menu.col;
+        if (cell_row == r && cell_col >= c0 && cell_col < c0 + width) {
+            int act = contextMenuActions[i];
+            editorCloseContextMenu(E);
+            return act;
+        }
+    }
+    editorCloseContextMenu(E);
+    return CTX_NONE;
+}
+
+char *editorGetSelectedText(struct editorConfig *E) {
+    int sr, sc, er, ec, r;
+    size_t len = 0, cap = 0;
+    char *buf = NULL;
+
+    if (!E->sel_active || E->numrows <= 0) return NULL;
+    editorSelectionNormalized(E, &sr, &sc, &er, &ec);
+    if (sr == er && sc >= ec) return NULL;
+
+    for (r = sr; r <= er; r++) {
+        erow *row = &E->row[r];
+        int from = (r == sr) ? sc : 0;
+        int to = (r == er) ? ec : row->size;
+        int n;
+        if (from < 0) from = 0;
+        if (to > row->size) to = row->size;
+        if (to < from) to = from;
+        n = to - from;
+        if (len + (size_t)n + 2 > cap) {
+            cap = (len + (size_t)n + 2) * 2 + 64;
+            buf = realloc(buf, cap);
+            if (!buf) return NULL;
+        }
+        if (n > 0) {
+            memcpy(buf + len, row->chars + from, (size_t)n);
+            len += (size_t)n;
+        }
+        if (r < er) {
+            buf[len++] = '\n';
+        }
+    }
+    if (!buf) {
+        buf = malloc(1);
+        if (buf) buf[0] = '\0';
+        return buf;
+    }
+    buf[len] = '\0';
+    return buf;
+}
+
+int editorDeleteSelection(struct editorConfig *E) {
+    int sr, sc, er, ec, r;
+    if (!E->sel_active || E->numrows <= 0) return 0;
+    editorSelectionNormalized(E, &sr, &sc, &er, &ec);
+    if (sr == er && sc >= ec) {
+        editorClearSelection(E);
+        return 0;
+    }
+
+    undoBeginGroup(E);
+    if (sr == er) {
+        /* Single line range. */
+        erow *row = &E->row[sr];
+        int n = ec - sc;
+        if (n > 0 && sc < row->size) {
+            char *old = malloc((size_t)n + 1);
+            if (old) {
+                int nn = n;
+                if (sc + nn > row->size) nn = row->size - sc;
+                memcpy(old, row->chars + sc, (size_t)nn);
+                old[nn] = '\0';
+                undoPushAtom(E, U_DELETE_TEXT, sr, sc, old, (size_t)nn);
+                free(old);
+            }
+            {
+                int prev = E->undo.suspend;
+                E->undo.suspend = 1;
+                undoApplyDeleteText(E, sr, sc, (size_t)(ec - sc));
+                E->undo.suspend = prev;
+            }
+        }
+    } else {
+        /* Multi-line: delete from end toward start so indices stay valid. */
+        /* 1) Delete tail on last line */
+        if (er < E->numrows && ec > 0) {
+            erow *row = &E->row[er];
+            int n = ec;
+            if (n > row->size) n = row->size;
+            if (n > 0) {
+                char *old = malloc((size_t)n + 1);
+                if (old) {
+                    memcpy(old, row->chars, (size_t)n);
+                    old[n] = '\0';
+                    undoPushAtom(E, U_DELETE_TEXT, er, 0, old, (size_t)n);
+                    free(old);
+                }
+                {
+                    int prev = E->undo.suspend;
+                    E->undo.suspend = 1;
+                    undoApplyDeleteText(E, er, 0, (size_t)n);
+                    E->undo.suspend = prev;
+                }
+            }
+        }
+        /* 2) Delete whole middle lines */
+        for (r = er - 1; r > sr; r--) {
+            erow *row = &E->row[r];
+            undoPushAtom(E, U_DELETE_ROW, r, 0, row->chars, (size_t)row->size);
+            {
+                int prev = E->undo.suspend;
+                E->undo.suspend = 1;
+                undoApplyDeleteRow(E, r);
+                E->undo.suspend = prev;
+            }
+        }
+        /* 3) Delete from sc to end on first line, then join with next */
+        if (sr < E->numrows) {
+            erow *row = &E->row[sr];
+            if (sc < row->size) {
+                int n = row->size - sc;
+                char *old = malloc((size_t)n + 1);
+                if (old) {
+                    memcpy(old, row->chars + sc, (size_t)n);
+                    old[n] = '\0';
+                    undoPushAtom(E, U_DELETE_TEXT, sr, sc, old, (size_t)n);
+                    free(old);
+                }
+                {
+                    int prev = E->undo.suspend;
+                    E->undo.suspend = 1;
+                    undoApplyDeleteText(E, sr, sc, (size_t)n);
+                    E->undo.suspend = prev;
+                }
+            }
+            /* Join following line (former er remnant) */
+            if (sr + 1 < E->numrows) {
+                undoPushAtom(E, U_JOIN_LINES, sr, E->row[sr].size, NULL, 0);
+                {
+                    int prev = E->undo.suspend;
+                    E->undo.suspend = 1;
+                    undoApplyJoinLines(E, sr);
+                    E->undo.suspend = prev;
+                }
+            }
+        }
+    }
+    /* Place cursor at selection start */
+    E->rowoff = sr;
+    E->cy = 0;
+    if (sr >= E->rowoff && sr < E->rowoff + E->screenrows)
+        E->cy = sr - E->rowoff;
+    else {
+        E->rowoff = sr;
+        E->cy = 0;
+    }
+    E->coloff = 0;
+    E->cx = sc;
+    if (E->cx >= editorTextCols(E)) {
+        E->coloff = E->cx - editorTextCols(E) + 1;
+        E->cx = editorTextCols(E) - 1;
+    }
+    E->dirty++;
+    undoEndGroup(E);
+    editorClearSelection(E);
+    return 1;
 }
 
 void editorSelectAll(struct editorConfig *E) {

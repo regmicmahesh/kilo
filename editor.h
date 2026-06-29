@@ -22,6 +22,27 @@ typedef struct erow {
     int hl_oc;
 } erow;
 
+/* Context menu (right-click). */
+enum contextAction {
+    CTX_NONE = 0,
+    CTX_UNDO,
+    CTX_REDO,
+    CTX_CUT,
+    CTX_COPY,
+    CTX_PASTE,
+    CTX_SELECT_ALL,
+    CTX_SAVE,
+    CTX_FIND
+};
+
+struct contextMenu {
+    int active;
+    int col;
+    int row;
+    int hover;
+    int nitems;
+};
+
 struct editorConfig {
     int cx, cy;
     int rowoff;
@@ -44,6 +65,7 @@ struct editorConfig {
     int sel_anchor_col;
     int sel_caret_row;
     int sel_caret_col;
+    struct contextMenu ctx_menu;
 };
 
 enum KEY_ACTION {
@@ -74,7 +96,8 @@ enum KEY_ACTION {
     END_KEY,
     PAGE_UP,
     PAGE_DOWN,
-    MOUSE_CLICK = 2000
+    MOUSE_CLICK = 2000,
+    MOUSE_RIGHT_CLICK = 2001
 };
 
 void initEditor(struct editorConfig *E);
@@ -111,5 +134,19 @@ void editorSelectionNormalized(const struct editorConfig *E,
                                int *sr, int *sc, int *er, int *ec);
 /* True if file position (row, col) lies inside the selection. */
 int editorPosSelected(const struct editorConfig *E, int row, int col);
+
+/* Selection → heap string (caller frees). NULL if no selection. */
+char *editorGetSelectedText(struct editorConfig *E);
+/* Delete current selection (undoable). Returns 1 if something was deleted. */
+int editorDeleteSelection(struct editorConfig *E);
+
+extern const char *contextMenuLabels[];
+extern const int contextMenuActions[];
+extern const int contextMenuItemCount;
+
+void editorOpenContextMenu(struct editorConfig *E, int cell_col, int cell_row);
+void editorCloseContextMenu(struct editorConfig *E);
+/* If (col,row) hits an item, return its action; else CTX_NONE and close. */
+int editorContextMenuClick(struct editorConfig *E, int cell_col, int cell_row);
 
 #endif

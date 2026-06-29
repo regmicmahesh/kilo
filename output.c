@@ -215,6 +215,37 @@ void editorRefreshScreen(struct editorConfig *E) {
         }
     }
 
+    /* Right-click context menu */
+    if (E->ctx_menu.active && E->ctx_menu.nitems > 0) {
+        int i;
+        int mcol = E->ctx_menu.col;
+        int mrow = E->ctx_menu.row;
+        int width = 18;
+        /* Shadow */
+        for (i = 0; i < E->ctx_menu.nitems; i++)
+            guiFillCellRow(mcol + 1, mrow + 1 + i, width, 0.0f, 0.0f, 0.0f, 0.4f);
+        for (i = 0; i < E->ctx_menu.nitems; i++) {
+            const char *lab = contextMenuLabels[i];
+            char line[64];
+            int n, pad;
+            int hover = (i == E->ctx_menu.hover);
+            if (hover)
+                guiFillCellRow(mcol, mrow + i, width, 0.18f, 0.42f, 0.78f, 1.0f);
+            else
+                guiFillCellRow(mcol, mrow + i, width, 0.20f, 0.21f, 0.26f, 1.0f);
+            n = snprintf(line, sizeof(line), " %s", lab);
+            for (pad = n; pad < width && pad < (int)sizeof(line) - 1; pad++)
+                line[pad] = ' ';
+            line[pad] = '\0';
+            guiDrawTextCell(mcol, mrow + i, line, pad,
+                            hover ? 1.0f : 0.92f,
+                            hover ? 1.0f : 0.93f,
+                            hover ? 1.0f : 0.95f);
+        }
+        /* Border top/bottom accent */
+        guiFillCellRow(mcol, mrow, width, 0.30f, 0.55f, 0.90f, 0.5f);
+    }
+
     /* Block cursor */
     {
         int ccol = gutter + E->cx;
