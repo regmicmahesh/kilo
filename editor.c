@@ -44,6 +44,9 @@ void initEditor(struct editorConfig *E) {
     E->statusmsg_time = 0;
     E->screenrows = 40;
     E->screencols = 100;
+    E->sel_active = 0;
+    E->sel_anchor_row = E->sel_anchor_col = 0;
+    E->sel_caret_row = E->sel_caret_col = 0;
     undoInit(&E->undo);
     lspInit(&E->lsp);
     updateWindowSize(E);
@@ -499,6 +502,67 @@ void editorMoveCursor(struct editorConfig *E, int key) {
 
 int editorFileWasModified(struct editorConfig *E) {
     return E->dirty;
+}
+
+void editorClearSelection(struct editorConfig *E) {
+    E->sel_active = 0;
+}
+
+void editorSelectionNormalized(const struct editorConfig *E,
+                               int *sr, int *sc, int *er, int *ec) {
+    int ar = E->sel_anchor_row, ac = E->sel_anchor_col;
+    int cr = E->sel_caret_row, cc = E->sel_caret_col;
+    if (ar < cr || (ar == cr && ac <= cc)) {
+        *sr = ar; *sc = ac; *er = cr; *ec = cc;
+    } else {
+        *sr = cr; *sc = cc; *er = ar; *ec = ac;
+    }
+}
+
+int editorPosSelected(const struct editorConfig *E, int row, int col) {
+    int sr, sc, er, ec;
+    if (!E->sel_active) return 0;
+    editorSelectionNormalized(E, &sr, &sc, &er, &ec);
+    if (row < sr || row > er) return 0;
+    if (sr == er) return col >= sc && col < ec;
+    if (row == sr) return col >= sc;
+    if (row == er) return col < ec;
+    return 1; /* full middle lines */
+}
+
+void editorSelectAll(struct editorConfig *E) {
+    int last_row, last_col;
+
+    if (E->numrows <= 0) {
+        E->sel_active = 0;
+        E->sel_anchor_row = E->sel_anchor_col = 0;
+        E->sel_caret_row = E->sel_caret_col = 0;
+        E->cx = E->cy = 0;
+        E->rowoff = E->coloff = 0;
+        return;
+    }
+
+    last_row = E->numrows - 1;
+    last_col = E->row[last_row].size;
+
+    E->sel_active = 1;
+    E->sel_anchor_row = 0;
+    E->sel_anchor_col = 0;
+    E->sel_caret_row = last_row;
+    E->sel_caret_col = last_col;
+
+    /* Move caret to end of buffer and scroll into view. */
+    E->rowoff = last_row - E->screenrows + 1;
+    if (E->rowoff < 0) E->rowoff = 0;
+    E->cy = last_row - E->rowoff;
+    E->coloff = 0;
+    if (last_col < editorTextCols(E)) {
+        E->cx = last_col;
+    } else {
+        E->coloff = last_col - editorTextCols(E) + 1;
+        if (E->coloff < 0) E->coloff = 0;
+        E->cx = last_col - E->coloff;
+    }
 }
 
 /* Insert a full row as one undo unit (e.g. paste line / indent helpers). */

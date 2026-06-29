@@ -25,6 +25,7 @@ static void editorClickGoto(struct editorConfig *E, int cell_col, int cell_row) 
 
     filerow = E->rowoff + cell_row;
     E->cy = cell_row;
+    editorClearSelection(E);
 
     /* Click in gutter → start of line. */
     if (cell_col <= gutter) {
@@ -144,8 +145,14 @@ void editorProcessKeypress(struct editorConfig *E) {
     }
 
     switch (c) {
+    case CTRL_A:
+        lspClearCompletion(E);
+        editorSelectAll(E);
+        editorSetStatusMessage(E, "Selected all (%d lines)", E->numrows);
+        break;
     case ENTER:
         lspClearCompletion(E);
+        editorClearSelection(E);
         editorInsertNewline(E);
         if (E->lsp.enabled) lspDidChange(E);
         break;
@@ -167,24 +174,29 @@ void editorProcessKeypress(struct editorConfig *E) {
         break;
     case CTRL_Z:
         lspClearCompletion(E);
+        editorClearSelection(E);
         editorUndo(E);
         if (E->lsp.enabled) lspDidChange(E);
         break;
     case CTRL_Y:
         lspClearCompletion(E);
+        editorClearSelection(E);
         editorRedo(E);
         if (E->lsp.enabled) lspDidChange(E);
         break;
     case CTRL_F:
         lspClearCompletion(E);
+        editorClearSelection(E);
         editorFind(E);
         break;
     case CTRL_H:
         lspClearCompletion(E);
+        editorClearSelection(E);
         editorFindReplace(E);
         break;
     case BACKSPACE:
     case DEL_KEY:
+        editorClearSelection(E);
         editorDelChar(E);
         if (E->lsp.enabled) {
             lspDidChange(E);
@@ -197,6 +209,7 @@ void editorProcessKeypress(struct editorConfig *E) {
     case PAGE_UP:
     case PAGE_DOWN:
         lspClearCompletion(E);
+        editorClearSelection(E);
         if (c == PAGE_UP && E->cy != 0)
             E->cy = 0;
         else if (c == PAGE_DOWN && E->cy != E->screenrows - 1)
@@ -212,19 +225,23 @@ void editorProcessKeypress(struct editorConfig *E) {
     case ARROW_LEFT:
     case ARROW_RIGHT:
         lspClearCompletion(E);
+        editorClearSelection(E);
         editorMoveCursor(E, c);
         break;
     case CTRL_L:
         break;
     case ESC:
         lspClearCompletion(E);
+        editorClearSelection(E);
         break;
     case TAB:
+        editorClearSelection(E);
         editorInsertChar(E, '\t');
         if (E->lsp.enabled) lspDidChange(E);
         break;
     default:
         if (c >= 32 && c < 127) {
+            editorClearSelection(E);
             editorInsertChar(E, c);
             if (E->lsp.enabled) {
                 lspDidChange(E);

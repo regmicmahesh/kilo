@@ -95,15 +95,37 @@ void editorRefreshScreen(struct editorConfig *E) {
                 char ch = r->render[E->coloff + j];
                 float cr, cg, cb;
                 int hlt = hl ? hl[j] : HL_NORMAL;
+                int filecol = E->coloff + j;
+                int selected = editorPosSelected(E, filerow, filecol);
+
+                if (selected)
+                    guiFillCellRow(gutter + j, y, 1, 0.20f, 0.35f, 0.55f, 1.0f);
+
                 if (hlt == HL_NONPRINT) {
                     char sym = (ch <= 26) ? (char)('@' + ch) : '?';
-                    guiFillCellRow(gutter + j, y, 1, 0.5f, 0.5f, 0.2f, 1.0f);
+                    if (!selected)
+                        guiFillCellRow(gutter + j, y, 1, 0.5f, 0.5f, 0.2f, 1.0f);
                     guiDrawTextCell(gutter + j, y, &sym, 1, 0.9f, 0.9f, 0.5f);
                 } else {
                     hlColor(hlt, &cr, &cg, &cb);
-                    if (hlt == HL_MATCH)
+                    if (hlt == HL_MATCH && !selected)
                         guiFillCellRow(gutter + j, y, 1, 0.15f, 0.25f, 0.45f, 1.0f);
+                    if (selected) {
+                        cr = 0.95f; cg = 0.97f; cb = 1.0f;
+                    }
                     guiDrawTextCell(gutter + j, y, &ch, 1, cr, cg, cb);
+                }
+            }
+            /* Highlight through end of line when selection covers EOL gap
+             * (multi-line selection middle/start rows). */
+            if (E->sel_active && len < textcols) {
+                int sr, sc, er, ec;
+                editorSelectionNormalized(E, &sr, &sc, &er, &ec);
+                if (filerow >= sr && filerow < er) {
+                    int from = len > 0 ? len : 0;
+                    if (from < textcols)
+                        guiFillCellRow(gutter + from, y, textcols - from,
+                                        0.20f, 0.35f, 0.55f, 1.0f);
                 }
             }
         }

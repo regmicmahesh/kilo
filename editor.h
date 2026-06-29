@@ -37,6 +37,13 @@ struct editorConfig {
     struct editorSyntax *syntax;
     struct undoState undo;
     struct lspClient lsp;
+    /* Text selection in file coordinates (row, char col). Inclusive start,
+     * exclusive end when normalized (see editorSelectionNormalized). */
+    int sel_active;
+    int sel_anchor_row;
+    int sel_anchor_col;
+    int sel_caret_row;
+    int sel_caret_col;
 };
 
 enum KEY_ACTION {
@@ -96,5 +103,13 @@ void editorUndoableDeleteRow(struct editorConfig *E, int at);
 void editorUndoableInsertText(struct editorConfig *E, const char *s, size_t len);
 
 int editorFileWasModified(struct editorConfig *E);
+
+void editorClearSelection(struct editorConfig *E);
+void editorSelectAll(struct editorConfig *E);
+/* Write ordered selection bounds (start <= end in document order). */
+void editorSelectionNormalized(const struct editorConfig *E,
+                               int *sr, int *sc, int *er, int *ec);
+/* True if file position (row, col) lies inside the selection. */
+int editorPosSelected(const struct editorConfig *E, int row, int col);
 
 #endif
